@@ -23,20 +23,146 @@ never from memory (CLAUDE.md rules 1 and 4).
 
 ## 1. Virtual machine
 
-Already built: a hardened Windows Server AD VM. Record the exact specs used so
-the dataset is reproducible:
+A single Windows client VM (`win-lab`) on a Fedora host using KVM/libvirt,
+built as in section 1a. Record the exact specs used so the dataset is
+reproducible:
 
 | Item | Value |
 |---|---|
-| OS / build | `TODO` (e.g. Windows Server 2022, build `<n>`) |
-| Role | Standalone AD DC / domain `<lab.local>` |
-| vCPU / RAM / disk | `TODO` |
-| Hypervisor | `TODO` (VirtualBox / Hyper-V / VMware) + version |
-| Network | host-only / disconnected (confirm no bridge) |
-| Baseline snapshot name | `TODO` (the clean state reverted to) |
+| OS / build | `TODO` (e.g. Windows 11 Enterprise evaluation, build `<n>`) |
+| Role | Standalone workstation, local account (no Microsoft account) |
+| vCPU / RAM / disk | `TODO` (planned: 4 vCPU / 6 GB / 60 GB, VirtIO) |
+| Hypervisor | KVM + libvirt/QEMU on Fedora, versions `TODO` |
+| Network | libvirt isolated network `lab-isolated` for all test runs (no `<forward>`) |
+| Baseline snapshot name | `clean-baseline` (Sysmon + atomics installed) |
+| Defender | `TODO` (on / off — see 1a step 4; it changes which techniques execute) |
 
 Keep the VM patched to a fixed date and record it; "patched as of `<date>`" is
 part of the dataset description.
+
+### 1a. Fedora host setup (KVM / libvirt)
+
+**Host requirements:** hardware virtualization (`vmx`/`svm`), about 6 GB RAM
+free for the guest, and about 60 GB free disk. Close memory-heavy apps before
+running the VM.
+
+**1. Install KVM and libvirt**
+```bash
+sudo dnf install -y @virtualization
+sudo systemctl enable --now libvirtd
+sudo usermod -aG libvirt,kvm $USER
+# log out and back in so the group change applies, then verify:
+virt-host-validate qemu
+```
+
+**2. Download media (while online)**
+- Windows 11 Enterprise (or Windows 10) **evaluation ISO** from the Microsoft
+  Evaluation Center (free, time-limited; note the expiry date: `TODO`).
+- VirtIO drivers ISO:
+  ```bash
+  mkdir -p ~/vm && cd ~/vm
+  curl -LO https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso
+  ```
+- Inside the VM later: Sysmon, a community Sysmon config, `Invoke-AtomicRedTeam`.
+
+**3. Create the VM** (virt-manager, first time)
+```bash
+virt-manager
+```
+- Local install media, pick the Windows ISO.
+- 6144 MB RAM, 4 vCPUs, 60 GB disk. Choose "Customize before install".
+- Disk bus **VirtIO**, NIC model **virtio**, add `virtio-win.iso` as a second
+  CD-ROM so the installer can load the storage driver.
+- Firmware **UEFI** with **TPM** for Windows 11 (or use Windows 10 to skip TPM).
+- Name the VM `win-lab`.
+- Create a **local account** (on Windows 11 press `Shift+F10`, run
+  `OOBE\BYPASSNRO`). Never sign in with a personal Microsoft account.
+
+**4. Provision while the VM still has internet (default NAT network)**
+1. Install the VirtIO guest tools from the virtio ISO
+   (`virtio-win-guest-tools.exe`).
+2. Install Sysmon with the config chosen in section 2.
+3. Install Atomic Red Team:
+   ```powershell
+   IEX (IWR 'https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1' -UseBasicParsing)
+   Install-AtomicRedTeam -getAtomics
+   ```
+4. **Decide on Defender** and record it in the table above: leave it on (its
+   blocks are part of the data) or disable it in this lab VM so techniques
+   execute. This affects the results, so state the choice in the README
+   limitations.
+5. Shut down and take the clean snapshot:
+   ```bash
+   virsh snapshot-create-as win-lab clean-baseline \
+     --description "Sysmon + atomics installed, networked"
+   ```
+
+**5. Create the isolated network and switch the VM to it**
+```bash
+cat > ~/vm/isolated.xml <<'EOF'
+<network>
+  <name>lab-isolated</name>
+  <!-- no <forward> element = fully isolated: no NAT, no route to the host LAN -->
+  <bridge name="virbr-lab" stp="on" delay="0"/>
+</network>
+EOF
+sudo virsh net-define ~/vm/isolated.xml
+sudo virsh net-start lab-isolated
+sudo virsh net-autostart lab-isolated
+
+virsh shutdown win-lab
+virsh detach-interface win-lab network --persistent
+virsh attach-interface win-lab network lab-isolated --model virtio --persistent
+virsh start win-lab
+```
+**Verify isolation from inside the VM before any atomic:** `ping 8.8.8.8` and
+`Test-NetConnection google.com -Port 443` must both fail. Record the result:
+`TODO`.
+
+If the VM runs under the user session libvirt (`qemu:///session`) instead of the
+system one, add `--connect qemu:///system` (or set
+`LIBVIRT_DEFAULT_URI=qemu:///system`) so `virsh` and `virt-manager` see the same
+VM and network.
+
+**6. Per-technique run: record the label in the `labels.csv` schema**
+
+Run from a fresh `clean-baseline` snapshot each time. In the VM, log a row in
+the section 5 format (UTC times):
+```powershell
+$s = (Get-Date).ToUniversalTime().ToString("o")
+Invoke-AtomicTest T1059.001 -TestNumbers 1
+$e = (Get-Date).ToUniversalTime().ToString("o")
+Invoke-AtomicTest T1059.001 -Cleanup
+"atomic-T1059.001-1,$env:COMPUTERNAME,lab,malicious,T1059.001,$s,$e" |
+  Out-File -Append -Encoding ascii C:\labels.csv
+```
+(`labels.csv` columns: `session_id,host,source,label,technique_id,start_utc,end_utc`;
+write the header once.) Export the logs (section 6), copy `labels.csv` out, then
+revert on the host:
+```bash
+virsh snapshot-revert win-lab clean-baseline
+```
+Reverting also discards `C:\labels.csv` inside the VM, so **copy it out before
+every revert**.
+
+**7. Getting logs and labels out of an isolated VM**
+
+Pick one and record which: `TODO`.
+- Shut the VM down and read its disk read-only on the host:
+  ```bash
+  sudo dnf install -y libguestfs-tools
+  sudo guestmount -a /var/lib/libvirt/images/win-lab.qcow2 -i --ro /mnt
+  # copy the .evtx and labels.csv out, then:
+  sudo guestunmount /mnt
+  ```
+- Or briefly re-attach the NAT network for a quick copy, then switch back to
+  `lab-isolated` and re-verify isolation.
+
+Do not leave a writable shared folder mounted while atomics are running.
+
+**Safety reminders:** use a throwaway VM with no personal data or logged-in
+accounts; never run Atomic Red Team on the Fedora host or on a VM that can reach
+the LAN.
 
 ## 2. Sysmon install and config
 
