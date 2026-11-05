@@ -51,8 +51,11 @@ train:  ## Fit Isolation Forest  (usage: make train FEATURES=feat.parquet MODEL=
 	@test -n "$(FEATURES)" && test -n "$(MODEL)" || { echo "usage: make train FEATURES=<feat.parquet> MODEL=<model.joblib>"; exit 2; }
 	$(PY) -m detect.model "$(FEATURES)" "$(MODEL)"
 
-evaluate:  ## Regenerate every results table and figure (reproducibility gate)
-	@echo "TODO: implement src/detect/evaluate.py"
+evaluate: EVENTS ?=
+evaluate: OUTDIR ?= artifacts
+evaluate:  ## Regenerate result tables + figure  (usage: make evaluate EVENTS=norm.parquet)
+	@test -n "$(EVENTS)" || { echo "usage: make evaluate EVENTS=<normalized-labeled.parquet> [OUTDIR=artifacts]"; exit 2; }
+	$(PY) -m detect.evaluate "$(EVENTS)" --outdir "$(OUTDIR)" --rules-dir rules
 
 test:  ## Run the pytest suite
 	$(PY) -m pytest

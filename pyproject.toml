@@ -21,6 +21,8 @@ dependencies = [
     "pyarrow>=17",       # Parquet I/O for the normalized event store
     "pyyaml>=6",         # Sigma-style rule definitions
     "evtx>=0.8.7",       # .evtx parser: Rust-backed (pyevtx-rs), JSON output
+    "matplotlib>=3.8",   # per-technique recall figure
+    "tabulate>=0.9",     # markdown result tables (pandas to_markdown)
 ]
 
 [project.optional-dependencies]
