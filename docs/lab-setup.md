@@ -84,23 +84,64 @@ virt-manager
 - Create a **local account** (on Windows 11 press `Shift+F10`, run
   `OOBE\BYPASSNRO`). Never sign in with a personal Microsoft account.
 
-**4. Provision while the VM still has internet (default NAT network)**
-1. Install the VirtIO guest tools from the virtio ISO
-   (`virtio-win-guest-tools.exe`).
-2. Install Sysmon with the config chosen in section 2.
-3. Install Atomic Red Team:
+**4. Provision while the VM still has internet (default NAT network).** Run all
+PowerShell **as Administrator**. (URLs verified live 2026-11; re-check if a
+download 404s — CLAUDE.md rule 4.)
+
+1. **VirtIO guest tools** from the virtio CD (find its drive letter in Explorer):
    ```powershell
-   IEX (IWR 'https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1' -UseBasicParsing)
-   Install-AtomicRedTeam -getAtomics
+   Start-Process "D:\virtio-win-guest-tools.exe" -ArgumentList "/quiet" -Wait  # adjust drive
    ```
-4. **Decide on Defender** and record it in the table above: leave it on (its
-   blocks are part of the data) or disable it in this lab VM so techniques
-   execute. This affects the results, so state the choice in the README
-   limitations.
-5. Shut down and take the clean snapshot:
+2. **Get the collection helpers** (this repo) into the VM — no git needed:
+   ```powershell
+   New-Item C:\lab -ItemType Directory -Force | Out-Null; cd C:\lab
+   Invoke-WebRequest https://github.com/cOmrade3267/detection-project/archive/refs/heads/main.zip -OutFile repo.zip
+   Expand-Archive repo.zip -DestinationPath C:\lab -Force
+   # helpers at C:\lab\detection-project-main\scripts\collect\
+   ```
+3. **Sysmon + config** (section 2 explains the config choice; `swift` shown):
+   ```powershell
+   cd C:\lab
+   Invoke-WebRequest https://download.sysinternals.com/files/Sysmon.zip -OutFile Sysmon.zip
+   Expand-Archive Sysmon.zip -DestinationPath Sysmon -Force
+   Invoke-WebRequest https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml -OutFile sysmonconfig.xml
+   .\Sysmon\Sysmon64.exe -accepteula -i sysmonconfig.xml
+   Select-String C:\lab\sysmonconfig.xml -Pattern 'sysmonconfig version' | Select-Object -First 1  # RECORD this
+   ```
+4. **Security 4688 + command line** (the pipeline consumes these):
+   ```powershell
+   auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable
+   reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit" `
+     /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
+   ```
+5. **Atomic Red Team:**
+   ```powershell
+   Set-ExecutionPolicy Bypass -Scope Process -Force
+   IEX (IWR 'https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1' -UseBasicParsing)
+   Install-AtomicRedTeam -getAtomics -Force
+   Import-Module "C:\AtomicRedTeam\invoke-atomicredteam\Invoke-AtomicRedTeam.psd1" -Force
+   Invoke-AtomicTest T1059.001 -ShowDetailsBrief   # smoke test
+   ```
+6. **Decide on Defender** and record it — it is now a `labels.csv` column
+   (`defender_state`), so pass the matching `-DefenderState on|off` to every
+   collection-helper call. Leave it **on** (blocks are part of the data) or
+   **off** so techniques execute. To disable: turn off **Tamper Protection** in
+   the Windows Security GUI first, then
+   ```powershell
+   Set-MpPreference -DisableRealtimeMonitoring $true
+   Add-MpPreference -ExclusionPath "C:\AtomicRedTeam"
+   ```
+   State the choice in the README limitations either way.
+7. **Verify Sysmon is logging** (if empty, fix the config before collecting):
+   ```powershell
+   Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" -MaxEvents 5 | Format-Table TimeCreated, Id
+   ```
+8. Shut down and take the clean snapshot (the state you revert to before every
+   malicious run):
    ```bash
+   virsh shutdown win-lab
    virsh snapshot-create-as win-lab clean-baseline \
-     --description "Sysmon + atomics installed, networked"
+     --description "Sysmon(swift) + atomics + 4688 auditing, NAT"
    ```
 
 **5. Create the isolated network and switch the VM to it**
@@ -167,28 +208,26 @@ the LAN.
 
 ## 2. Sysmon install and config
 
-1. Download **Sysmon** (Sysinternals) — record the exact version: `TODO`.
-2. Use a **community base config** as the starting point (do not hand-roll):
-   - SwiftOnSecurity `sysmon-config`, or
-   - Olaf Hartong `sysmon-modular`.
-   Record which one and the **exact commit/tag** you used: `TODO`. Commit the
-   config file (or its hash) alongside the dataset notes — the config decides
-   which events exist, so it is part of the methodology.
-3. Install / update:
-   ```powershell
-   Sysmon64.exe -accepteula -i sysmon-config.xml      # first install
-   Sysmon64.exe -c sysmon-config.xml                  # update config later
-   ```
-4. Confirm the channel is populated:
-   `Microsoft-Windows-Sysmon/Operational`.
+The install/auditing commands are in **section 1a step 3–4** (run there, in
+order). This section is the *choice* behind them — the config decides which
+events exist, so it is part of the methodology.
 
-The pipeline consumes **Sysmon EID 1, 3, 7, 11, 13, 22** and **Security 4688**
-(`src/detect/normalize.py`). For 4688 with command line, also enable:
-- Audit Process Creation (Security 4688), and
-- "Include command line in process creation events"
-  (`Administrative Templates → System → Audit Process Creation`).
-Record whether 4688 command-line capture was on: `TODO` (affects which
-command-line features exist for Security events).
+- **Config:** use a **community base config** (do not hand-roll). Section 1a uses
+  **SwiftOnSecurity `sysmon-config`** (`sysmon_config = swift`) — simple, widely
+  understood, and it emits every event the pipeline needs. Olaf Hartong
+  `sysmon-modular` is the heavier alternative; add it later as the **second
+  config** for the L1 controlled-variable comparison (clone the repo and build
+  its merged `sysmonconfig.xml`; the raw single-file URL is not stable).
+- **Record, as methodology:** Sysmon version (`TODO`), the config repo **commit/
+  tag** (`TODO`), and whether 4688 command-line capture was enabled (section 1a
+  step 4 enables it). Commit the config file (or its hash) with the dataset
+  notes.
+- **Why these:** the pipeline consumes **Sysmon EID 1, 3, 7, 11, 13, 22** and
+  **Security 4688** (`src/detect/normalize.py`); 4688 with command line needs
+  both Audit Process Creation and the `ProcessCreationIncludeCmdLine` policy,
+  which step 4 sets. Without the command-line policy, Security-event command-line
+  features are empty.
+- **Update the config later** with `Sysmon64.exe -c sysmonconfig.xml`.
 
 ## 3. Benign collection (negative class)
 
