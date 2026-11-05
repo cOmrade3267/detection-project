@@ -33,12 +33,17 @@ from sklearn.preprocessing import StandardScaler
 from .features import FEATURE_COLUMNS
 
 
-def select_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Extract the model feature columns as floats (missing cols -> NaN column)."""
+def select_features(df: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
+    """Extract the model feature columns as floats (missing cols -> NaN column).
+
+    ``columns`` restricts to a subset (used by the ablation to drop a group);
+    defaults to all FEATURE_COLUMNS.
+    """
+    columns = FEATURE_COLUMNS if columns is None else columns
     cols = {}
-    for c in FEATURE_COLUMNS:
+    for c in columns:
         cols[c] = pd.to_numeric(df[c], errors="coerce") if c in df.columns else np.nan
-    return pd.DataFrame(cols, index=df.index, columns=FEATURE_COLUMNS).astype("float64")
+    return pd.DataFrame(cols, index=df.index, columns=columns).astype("float64")
 
 
 def _benign_mask(df: pd.DataFrame) -> np.ndarray:
@@ -51,15 +56,16 @@ class IsolationForestDetector:
     """Isolation Forest with a train-fit median imputer. Higher score = anomalous."""
 
     def __init__(self, n_estimators: int = 200, contamination="auto", random_state: int = 42,
-                 max_samples="auto") -> None:
+                 max_samples="auto", feature_columns: list[str] | None = None) -> None:
         self.n_estimators = n_estimators
         self.contamination = contamination
         self.random_state = random_state
         self.max_samples = max_samples
+        self.feature_columns = feature_columns  # None -> all; a subset ablates a group
         self.pipeline_: Pipeline | None = None
 
     def fit(self, features: pd.DataFrame) -> IsolationForestDetector:
-        X = select_features(features)
+        X = select_features(features, self.feature_columns)
         if len(X) == 0:
             raise ValueError("Cannot fit on an empty feature set.")
         self.pipeline_ = Pipeline([
@@ -82,7 +88,7 @@ class IsolationForestDetector:
     def anomaly_score(self, features: pd.DataFrame) -> np.ndarray:
         if self.pipeline_ is None:
             raise RuntimeError("anomaly_score() called before fit().")
-        X = select_features(features)
+        X = select_features(features, self.feature_columns)
         # score_samples: higher = more normal. Negate so higher = more anomalous.
         return -self.pipeline_.score_samples(X)
 

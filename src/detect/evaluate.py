@@ -24,7 +24,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 
 from . import attack_map, external
-from .features import FEATURE_COLUMNS, FeatureBuilder
+from .features import FEATURE_COLUMNS, FEATURE_GROUPS, FeatureBuilder
 from .model import (
     IsolationForestDetector,
     LOFDetector,
@@ -144,6 +144,7 @@ class EvaluationResult:
     eval_table: pd.DataFrame         # per-process scores + preds + explanation
     explanations: pd.DataFrame       # per-alert top features + matching rules
     ci: pd.DataFrame                 # bootstrap 95% CIs (approach x metric), overall test
+    ablation: pd.DataFrame           # drop-one-feature-group ablation of the IF
     thresholds: dict[str, float]     # model -> validation-chosen score cut
     budget_per_10k: int              # alert budget the thresholds target
 
@@ -216,6 +217,48 @@ def _explain(
         rules = rules_by_guid.get(guid, "")
         rows.append({"process_guid": guid, "top_features": ", ".join(top), "rules": rules or ""})
     return pd.DataFrame(rows)
+
+
+def run_ablation(
+    fit_feats: pd.DataFrame,
+    val_feats: pd.DataFrame,
+    ev: pd.DataFrame,
+    test_feats: pd.DataFrame,
+    *,
+    groups: dict[str, list[str]],
+    rate: float,
+    random_state: int,
+) -> pd.DataFrame:
+    """Drop one feature group at a time, refit the Isolation Forest, re-measure.
+
+    Shows which signals the model actually relies on: a group whose removal
+    barely moves PR-AUC/recall isn't pulling its weight; a big drop means it is.
+    Each ablated model is thresholded on validation exactly like the full model,
+    so the comparison is apples-to-apples. The 'full (none dropped)' row is the
+    reference.
+    """
+    from .features import FEATURE_COLUMNS as ALL
+
+    y = (ev["label"].to_numpy() == MALICIOUS)
+    rows = []
+    for dropped, cols in [("full (none dropped)", [])] + [(g, groups[g]) for g in groups]:
+        keep = [c for c in ALL if c not in set(cols)]
+        det = IsolationForestDetector(random_state=random_state, feature_columns=keep)
+        det.fit_on_benign(fit_feats)
+        thr = _threshold(det, val_feats, fit_feats, rate)
+        score = det.anomaly_score(test_feats)
+        pred = score >= thr
+        m = binary_metrics(y, pred)
+        rows.append({
+            "dropped_group": dropped, "n_features": len(keep),
+            "recall": m["recall"], "precision": m["precision"],
+            "pr_auc": pr_auc(y, score), "fp_per_10k": fp_per_10k_benign(y, pred),
+        })
+    out = pd.DataFrame(rows)
+    # Delta in PR-AUC vs. the full model (negative = dropping that group hurt).
+    full_pr = out.loc[0, "pr_auc"]
+    out["pr_auc_delta_vs_full"] = out["pr_auc"] - full_pr
+    return out
 
 
 def run_evaluation(
@@ -359,6 +402,12 @@ def run_evaluation(
     y_all = (ev["label"].to_numpy() == MALICIOUS)
     ci = bootstrap_ci(y_all, ev["group"].to_numpy(), approaches, n_boot=n_boot, seed=random_state)
 
+    # Ablation: drop each feature group from the Isolation Forest and re-measure.
+    ablation = run_ablation(
+        fit_feats, val_feats, ev, test_feats,
+        groups=FEATURE_GROUPS, rate=rate, random_state=random_state,
+    )
+
     alerted = ev.loc[
         ev["alerted_any"], ["process_guid", "label", "technique_id", "top_features", "rules"]
     ].copy()
@@ -368,6 +417,7 @@ def run_evaluation(
         eval_table=ev,
         explanations=alerted,
         ci=ci,
+        ablation=ablation,
         thresholds=thresholds,
         budget_per_10k=budget_per_10k,
     )
@@ -396,6 +446,9 @@ def write_reports(result: EvaluationResult, outdir: str | Path) -> dict[str, Pat
           "", "## 95% confidence intervals (bootstrap over sessions, overall test)", "",
           (result.ci.round(4).to_markdown(index=False)
            if not result.ci.empty else "_No CIs._"),
+          "", "## Ablation — drop one feature group (Isolation Forest, overall test)", "",
+          (result.ablation.round(4).to_markdown(index=False)
+           if not result.ablation.empty else "_No ablation._"),
           "", "## Sample alert explanations (top contributing features + rules)", "",
           (result.explanations.head(20).to_markdown(index=False)
            if not result.explanations.empty else "_No alerts._"),
@@ -406,6 +459,10 @@ def write_reports(result: EvaluationResult, outdir: str | Path) -> dict[str, Pat
     if not result.ci.empty:
         result.ci.to_csv(out / "confidence_intervals.csv", index=False)
         written["ci_csv"] = out / "confidence_intervals.csv"
+
+    if not result.ablation.empty:
+        result.ablation.to_csv(out / "ablation.csv", index=False)
+        written["ablation_csv"] = out / "ablation.csv"
 
     if not result.explanations.empty:
         result.explanations.to_csv(out / "alert_explanations.csv", index=False)

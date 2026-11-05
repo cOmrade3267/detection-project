@@ -77,6 +77,20 @@ FEATURE_DOC: dict[str, str] = {
 }
 FEATURE_COLUMNS = list(FEATURE_DOC)
 
+# Feature groups for the ablation (drop one group, re-measure). Grouping by the
+# signal they share makes "which signals matter" interpretable, rather than
+# dropping 22 features one at a time.
+FEATURE_GROUPS: dict[str, list[str]] = {
+    "cmdline": ["cmdline_length", "cmdline_entropy", "cmdline_has_encoded",
+                "cmdline_has_noprofile", "cmdline_has_hidden", "cmdline_has_base64"],
+    "image": ["is_lolbin", "image_suspicious_path"],
+    "lineage": ["integrity_ordinal", "parent_child_rarity", "child_process_count"],
+    "network": ["net_conn_count", "net_distinct_dest_ip", "net_distinct_dest_port",
+                "net_uncommon_port_count", "dns_query_count"],
+    "volume": ["file_create_count", "image_load_count", "registry_set_count",
+               "event_count", "duration_seconds", "events_per_minute"],
+}
+
 
 def shannon_entropy(s: str | None) -> float:
     """Shannon entropy (bits/char) of a string; 0.0 for empty/missing/non-string."""

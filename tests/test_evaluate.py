@@ -136,6 +136,19 @@ def test_run_evaluation_has_confidence_intervals():
     assert set(result.ci["approach"]) == set(result.summary["approach"])
 
 
+def test_run_evaluation_has_ablation():
+    from detect.features import FEATURE_GROUPS
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
+    abl = result.ablation
+    assert abl.loc[0, "dropped_group"] == "full (none dropped)"
+    assert abl.loc[0, "pr_auc_delta_vs_full"] == 0.0  # reference row
+    # One row per group plus the full reference.
+    assert set(abl["dropped_group"]) == {"full (none dropped)", *FEATURE_GROUPS}
+    # Dropping a group removes that many features.
+    full_n = abl.loc[0, "n_features"]
+    assert (abl["n_features"] <= full_n).all()
+
+
 def test_write_reports_creates_files(tmp_path):
     result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
     evaluate.write_reports(result, tmp_path)
