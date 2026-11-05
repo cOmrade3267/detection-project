@@ -106,3 +106,42 @@ def test_label_file_roundtrip(tmp_path):
     labeled = pd.read_parquet(out)
     assert (labeled["label"] == "malicious").sum() == 1
     assert set(labeled["source"].dropna()) == {"lab"}
+
+
+def test_attach_labels_carries_run_metadata_onto_events():
+    """L1/L4: per-run metadata (defender/sysmon/os/user/run_id) flows to events."""
+    events = pd.DataFrame([{
+        "host": "lab01", "timestamp": "2021-03-01T12:00:30Z", "event_record_id": 1,
+        "label": None, "technique_id": None, "source": None, "session_id": None,
+    }])
+    labels = pd.DataFrame([{
+        "run_id": "r0007", "session_id": "mal-1", "host": "lab01", "source": "lab",
+        "label": "malicious", "technique_id": "T1059.001", "atomic_test_number": "1",
+        "defender_state": "off", "sysmon_config": "swift", "os_version": "win11-23h2",
+        "user_type": "standard",
+        "start_utc": "2021-03-01T12:00:00Z", "end_utc": "2021-03-01T12:01:00Z",
+    }])
+    out = label.attach_labels(events, labels)
+    row = out.iloc[0]
+    assert row["label"] == "malicious"
+    assert row["run_id"] == "r0007"
+    assert row["defender_state"] == "off"
+    assert row["sysmon_config"] == "swift"
+    assert row["os_version"] == "win11-23h2"
+    assert row["user_type"] == "standard"
+    assert row["atomic_test_number"] == "1"
+
+
+def test_attach_labels_works_without_metadata_columns():
+    """Minimal labels.csv (no metadata columns) still validates and labels."""
+    events = pd.DataFrame([{
+        "host": "h", "timestamp": "2021-03-01T12:00:30Z", "event_record_id": 1,
+        "label": None, "technique_id": None, "source": None, "session_id": None,
+    }])
+    labels = pd.DataFrame([{
+        "session_id": "s", "host": "h", "label": "malicious",
+        "start_utc": "2021-03-01T12:00:00Z", "end_utc": "2021-03-01T12:01:00Z",
+    }])
+    out = label.attach_labels(events, labels)
+    assert out.loc[0, "label"] == "malicious"
+    assert pd.isna(out.loc[0, "defender_state"])  # absent metadata -> NA, no crash

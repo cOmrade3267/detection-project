@@ -17,8 +17,15 @@ from pathlib import Path
 import pandas as pd
 
 REQUIRED_COLUMNS = {"session_id", "host", "label", "start_utc", "end_utc"}
-OPTIONAL_COLUMNS = {"source", "technique_id"}
-_LABEL_FIELDS = ["label", "technique_id", "source", "session_id"]
+# Per-run metadata carried from the run log onto each matched event, so later
+# splits can hold out a host / Sysmon config / Defender state without re-running
+# collection (L1, L4). `notes` stays in the run log only.
+META_COLUMNS = ["run_id", "atomic_test_number", "defender_state",
+                "sysmon_config", "os_version", "user_type"]
+OPTIONAL_COLUMNS = {"source", "technique_id", "notes", *META_COLUMNS}
+# Fields written onto events (source handled separately for its default).
+_CARRY_FIELDS = ["technique_id", "session_id", *META_COLUMNS]
+_STRING_FIELDS = ["label", "source", *_CARRY_FIELDS]
 
 
 def load_labels(path: str | Path) -> pd.DataFrame:
@@ -55,9 +62,9 @@ def attach_labels(
 
     # Initialise to defaults (overwritten per matching window below).
     out["label"] = default_label
-    out["technique_id"] = pd.NA
     out["source"] = default_source
-    out["session_id"] = pd.NA
+    for col in _CARRY_FIELDS:
+        out[col] = pd.NA
 
     lab = labels.copy()
     for col in OPTIONAL_COLUMNS:
@@ -74,11 +81,11 @@ def attach_labels(
         if not mask.any():
             continue
         out.loc[mask, "label"] = row.label
-        out.loc[mask, "technique_id"] = row.technique_id
         out.loc[mask, "source"] = row.source if pd.notna(row.source) else default_source
-        out.loc[mask, "session_id"] = row.session_id
+        for col in _CARRY_FIELDS:
+            out.loc[mask, col] = getattr(row, col)
 
-    for col in _LABEL_FIELDS:
+    for col in _STRING_FIELDS:
         out[col] = out[col].astype("string")
     return out
 

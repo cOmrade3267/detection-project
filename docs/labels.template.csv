@@ -1,0 +1,5 @@
+run_id,host,os_version,user_type,sysmon_config,defender_state,session_id,source,label,technique_id,atomic_test_number,start_utc,end_utc,notes
+b0001,WS01,win11-23h2,standard,swift,off,ben-0001,lab,benign,,,2026-11-05T14:00:00Z,2026-11-05T14:20:00Z,scripted office+browsing session
+b0002,WS01,win11-23h2,standard,swift,off,ben-0002,lab,benign,,,2026-11-05T14:25:00Z,2026-11-05T15:10:00Z,natural use
+r0001,WS01,win11-23h2,standard,swift,off,mal-0001,lab,malicious,T1059.001,1,2026-11-05T16:00:05Z,2026-11-05T16:00:48Z,atomic run 1 of 5
+r0002,WS01,win11-23h2,standard,swift,off,mal-0002,lab,malicious,T1059.001,1,2026-11-05T16:12:03Z,2026-11-05T16:12:40Z,atomic run 2 of 5

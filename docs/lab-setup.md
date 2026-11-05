@@ -126,19 +126,14 @@ VM and network.
 
 **6. Per-technique run: record the label in the `labels.csv` schema**
 
-Run from a fresh `clean-baseline` snapshot each time. In the VM, log a row in
-the section 5 format (UTC times):
+Run from a fresh `clean-baseline` snapshot each time, using the helper
+(section 8) which records the full section-5 row for you:
 ```powershell
-$s = (Get-Date).ToUniversalTime().ToString("o")
-Invoke-AtomicTest T1059.001 -TestNumbers 1
-$e = (Get-Date).ToUniversalTime().ToString("o")
-Invoke-AtomicTest T1059.001 -Cleanup
-"atomic-T1059.001-1,$env:COMPUTERNAME,lab,malicious,T1059.001,$s,$e" |
-  Out-File -Append -Encoding ascii C:\labels.csv
+.\run-technique.ps1 -TechniqueId T1059.001 -TestNumber 1 `
+  -DefenderState off -SysmonConfig swift -OsVersion win11-23h2 -UserType standard
+# appends one malicious row (run_id, metadata, UTC start/end) to C:\labels.csv
 ```
-(`labels.csv` columns: `session_id,host,source,label,technique_id,start_utc,end_utc`;
-write the header once.) Export the logs (section 6), copy `labels.csv` out, then
-revert on the host:
+Export the logs (section 6), copy `labels.csv` out, then revert on the host:
 ```bash
 virsh snapshot-revert win-lab clean-baseline
 ```
@@ -192,69 +187,109 @@ command-line features exist for Security events).
 ## 3. Benign collection (negative class)
 
 Goal: a representative sample of normal activity, captured under the same config.
+Benign data is the scarce part (there is no clean public benign Sysmon corpus —
+`data/README.md`), and it drives the false-positive estimate, so collect it two
+ways:
 
-- Duration / sessions: `TODO` (target 1–2 weeks of light use, or N scripted
-  sessions — record the actual number and dates).
-- Activities to cover (each as its own **session** so they split cleanly):
-  browsing, Office documents, software installs/updates, admin PowerShell
-  (benign), scheduled tasks, Windows Update, file copies.
-- For each benign session record a row in the run log (section 5) with
-  `label = benign`, `technique_id` empty, and the session's start/end time.
-- Benign runs do **not** need snapshot-revert, but keep sessions
-  time-separated so each has a clean boundary.
+- **Scripted sessions (for the learning curve).** Run the workload scripts in
+  `scripts/collect/benign/` (browsing, Office, software install, admin
+  PowerShell, scheduled task, dev tools, Windows Update, file copies). Each is
+  wrapped as one labeled benign **session** by `run-benign-session.ps1`, which
+  records the start/end window and appends a `label=benign` row. Run them
+  repeatedly across days so there are **many independent sessions** to subsample
+  — the FP **learning curve** (`make benign-report`, built once data exists)
+  needs that to show whether more benign data would change the conclusion.
+- **Natural use (for realism).** Also use the VM normally for stretches, each
+  logged as one benign session, so the benign set isn't only scripted behavior.
+
+- Benign runs do **not** need snapshot-revert, but keep sessions time-separated
+  so each has a clean `[start_utc, end_utc]` boundary.
+- Record `os_version`, `user_type`, `sysmon_config`, `defender_state` on every
+  benign row too (the helper fills them), so benign data is usable in the L1/L4
+  splits later.
 
 > Volume note: counts (events, processes, sessions) are **measured**, never
-> estimated — fill them in the README from a real `make`/inspection run.
+> estimated — fill them in the README from a real `make benign-report` run.
 
 ## 4. Malicious collection (positive class) — Atomic Red Team
 
 Tooling: Red Canary **Atomic Red Team** via the `Invoke-AtomicRedTeam`
 PowerShell module. Record the module/content commit used: `TODO`.
 
-Per-technique procedure (repeat for each chosen technique):
+**Repeat each technique ≥ 5 times** (the "insufficient evidence" threshold):
+per-technique recall from a single run is noise, so a technique with fewer than
+5 runs is flagged `insufficient evidence` in the report and no conclusion is
+drawn from it. Vary the atomic test number where the technique has variants, so
+the runs aren't identical.
 
-1. **Revert to the clean snapshot.**
-2. Start a new logging session; note `session_id` and the **UTC start time**.
-3. Run the atomic(s) for the technique:
-   ```powershell
-   Invoke-AtomicTest T1059.001 -GetPrereqs
-   Invoke-AtomicTest T1059.001            # optionally -TestNumbers 1,2
-   ```
-4. Note the **UTC end time**. Run the cleanup:
-   ```powershell
-   Invoke-AtomicTest T1059.001 -Cleanup
-   ```
-5. Append a run-log row (section 5) with `label = malicious`, the
-   `technique_id`, session_id, host, and start/end times.
-6. Export the logs for that session (section 6), then **revert** before the next
-   technique.
+Per-run procedure — one command with the helper, or by hand:
 
-**Technique selection:** start with 10–15 techniques across tactics; if time is
-short, cut to ~8 (CLAUDE.md s7). List the exact techniques actually run here:
+```powershell
+# from scripts/collect/ inside the VM, from a fresh clean-baseline each run:
+.\run-technique.ps1 -TechniqueId T1059.001 -TestNumber 1
+# -> runs prereqs, the atomic, records UTC start/end, runs cleanup,
+#    and appends one malicious row (with run_id + all metadata) to C:\labels.csv
+```
 
-| technique_id | name | atomic test numbers | notes |
-|---|---|---|---|
-| `TODO` | | | |
+By hand the steps are: revert to clean snapshot → record UTC start → run the
+atomic → record UTC end → run `-Cleanup` → append the run-log row (section 5) →
+export logs (section 6) → revert before the next run.
 
-Aim to cover the techniques our rules target (`T1059.001`, `T1105`, `T1218.005`)
-plus others so the model is tested beyond what the rules already catch.
+**Target technique matrix.** Pick techniques across the Enterprise tactics
+reachable on a Windows client; cover at least what our rules target
+(`T1059.001`, `T1105`, `T1218.005`) plus others so the model is tested beyond the
+rules. A starter matrix (confirm each is present in your Atomic Red Team content
+version before relying on it — CLAUDE.md rule 4):
+
+| tactic | technique_id | name | example atomic | runs done |
+|---|---|---|---|---|
+| Execution | T1059.001 | PowerShell | 1 | `TODO` |
+| Execution | T1059.003 | Windows Command Shell | 1 | `TODO` |
+| Execution | T1053.005 | Scheduled Task | 1 | `TODO` |
+| Defense Evasion | T1218.005 | Mshta | 1 | `TODO` |
+| Defense Evasion | T1218.011 | Rundll32 | 1 | `TODO` |
+| Defense Evasion | T1218.010 | Regsvr32 | 1 | `TODO` |
+| Defense Evasion | T1140 | Deobfuscate/Decode | 1 | `TODO` |
+| Command & Control | T1105 | Ingress Tool Transfer | 1 | `TODO` |
+| Discovery | T1082 | System Information Discovery | 1 | `TODO` |
+| Discovery | T1057 | Process Discovery | 1 | `TODO` |
+| Persistence | T1547.001 | Registry Run Keys | 1 | `TODO` |
+| Credential Access | T1003.001 | LSASS Memory | 1 | `TODO` |
+
+Fill "runs done" from the actual run log; the report derives it from
+`labels.csv`, this column is just the plan. Mark any you skip and why.
 
 ## 5. Labeling schema
 
-One run-log CSV, `data/lab/labels.csv`, one row per session (benign or one
-technique run). This is the single source of truth the pipeline joins against —
+One run-log CSV, `data/lab/labels.csv`, one row per benign session **or** per
+technique run. This is the single source of truth the pipeline joins against —
 labels are **attached from this log, never inferred** (`normalize.py` reserves
-the columns but leaves them null).
+the columns but leaves them null). A ready-to-copy header with example rows is in
+[`labels.template.csv`](labels.template.csv); the collection helper scripts
+(section 8) append rows in exactly this format.
 
-| column | meaning |
-|---|---|
-| `session_id` | unique id for the session (groups events; split unit) |
-| `host` | hostname (matches Sysmon `Computer`) |
-| `source` | `lab` (public samples use `public`, eval-only) |
-| `label` | `benign` or `malicious` |
-| `technique_id` | ATT&CK id for malicious rows; empty for benign |
-| `start_utc` | session/test start, ISO-8601 UTC |
-| `end_utc` | session/test end, ISO-8601 UTC |
+| column | req? | meaning |
+|---|---|---|
+| `run_id` | yes | unique id per row (benign session or technique run); lets the report count runs per technique |
+| `host` | yes | hostname (matches Sysmon `Computer`) |
+| `os_version` | rec | e.g. `win11-23h2`, `win10-22h2` — split variable (L1) |
+| `user_type` | rec | `standard` or `admin` — split variable (L1) |
+| `sysmon_config` | rec | e.g. `swift`, `modular` — controlled variable (L1) |
+| `defender_state` | rec | `on` or `off` — first-class split (L4) |
+| `session_id` | yes | session id (groups events; split unit) |
+| `source` | yes | `lab` (public samples use `public`, eval-only) |
+| `label` | yes | `benign` or `malicious` |
+| `technique_id` | mal | ATT&CK id for malicious rows; empty for benign |
+| `atomic_test_number` | mal | Atomic Red Team test number — distinguishes repeated/variant runs |
+| `start_utc` | yes | session/test start, ISO-8601 UTC |
+| `end_utc` | yes | session/test end, ISO-8601 UTC |
+| `notes` | no | free text |
+
+"req?": **yes** = required (pipeline errors without it); **rec** = recommended —
+record it now so the L1/L4 host/Defender splits work later **without re-collecting**;
+**mal** = malicious rows only. The recommended columns are carried from the run
+log onto every matched event (`src/detect/label.py`), so a later split can hold
+out a host, Sysmon config, or Defender state.
 
 **Time-window labeling rule:** an event is labeled by the run-log row whose
 `host` matches `Computer` and whose `[start_utc, end_utc]` contains the event
@@ -306,6 +341,26 @@ Record all of these with the dataset (they define the methodology):
 - [ ] Whether Security 4688 command-line capture was enabled
 - [ ] Atomic Red Team content commit
 - [ ] Exact technique list + atomic test numbers run
-- [ ] Benign session count and date range
+- [ ] Benign session count and date range (scripted **and** natural)
+- [ ] ≥ 5 runs per technique (fewer = "insufficient evidence" in the report)
+- [ ] `defender_state` recorded per row (for the L4 split)
 - [ ] Event/process/session counts (measured, filled into the README)
 - [ ] `labels.csv` committed (the run log; `.evtx`/data are gitignored)
+
+## 8. Collection helper scripts (`scripts/collect/`)
+
+VM-side PowerShell that makes each run one command and guarantees the
+`labels.csv` format. **Review them before running** — you must be able to
+explain anything in your own project (they are short and commented). They are
+written for the Windows VM and are not exercised by the repo's CI.
+
+| script | what it does |
+|---|---|
+| `run-technique.ps1` | Runs one Atomic test (prereqs → test → cleanup), times it in UTC, and appends one `malicious` row with a fresh `run_id` and all metadata. |
+| `run-benign-session.ps1` | Wraps a benign workload (or a manual natural-use window) as one labeled `benign` session row. |
+| `benign/*.ps1` | The scripted benign workloads (browsing, Office, install, admin PowerShell, scheduled task, dev tools, Windows Update, file copies). |
+| `_labels.ps1` | Shared helper: appends a correctly-shaped row to `C:\labels.csv`, writing the header once. |
+
+All scripts take `-DefenderState`, `-SysmonConfig`, `-OsVersion`, `-UserType`
+(recorded per row) so the L1/L4 splits work without re-collecting. Copy
+`C:\labels.csv` out before every snapshot-revert.
