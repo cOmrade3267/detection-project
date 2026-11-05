@@ -48,12 +48,18 @@ running the VM.
 
 **1. Install KVM and libvirt**
 ```bash
-sudo dnf install -y @virtualization
+# Install the concrete packages, NOT `@virtualization`: on Fedora with dnf5
+# (Fedora 41+) the `@virtualization` group shorthand can resolve to nothing and
+# "complete" without installing anything. Direct package names are reliable.
+sudo dnf install -y qemu-kvm libvirt virt-install virt-manager virt-viewer
 sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt,kvm $USER
 # log out and back in so the group change applies, then verify:
 virt-host-validate qemu
 ```
+(`virt-host-validate` ships with libvirt, so it only exists *after* this install;
+if the command is "not found", the install did not actually add the packages —
+check `rpm -q libvirt qemu-kvm`.)
 
 **2. Download media (while online)**
 - Windows 11 Enterprise (or Windows 10) **evaluation ISO** from the Microsoft
