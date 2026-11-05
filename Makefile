@@ -3,7 +3,7 @@
 # Each prints what it will do so the pipeline order is self-documenting.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lock ingest normalize label features rules train evaluate test lint clean all
+.PHONY: help setup lock ingest doctor normalize label features rules train evaluate test lint clean all
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -26,6 +26,11 @@ ingest: OUT ?=
 ingest:  ## .evtx -> Parquet  (usage: make ingest EVTX=in.evtx OUT=out.parquet)
 	@test -n "$(EVTX)" && test -n "$(OUT)" || { echo "usage: make ingest EVTX=<in.evtx> OUT=<out.parquet>"; exit 2; }
 	$(PY) -m detect.ingest "$(EVTX)" "$(OUT)"
+
+doctor: IN ?=
+doctor:  ## Data-quality report (usage: make doctor IN=events.parquet)
+	@test -n "$(IN)" || { echo "usage: make doctor IN=<ingest-or-normalized.parquet>"; exit 2; }
+	$(PY) -m detect.doctor "$(IN)"
 
 normalize: IN ?=
 normalize: OUT ?=
