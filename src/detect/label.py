@@ -4,7 +4,9 @@ Labels are never inferred from event content -- they come from the lab run log
 (`labels.csv`, one row per session/test). An event is labeled by the row whose
 `host` matches the event's host and whose `[start_utc, end_utc]` contains the
 event timestamp; it inherits that row's label, technique_id, source and
-session_id. Events matching no window keep the defaults (benign). Where a benign
+session_id. Events matching no window are **unlabeled** (setup, prerequisite
+downloads, idle time: activity nobody vouched for) and are excluded from
+training and evaluation downstream; they are NOT assumed benign. Where a benign
 and a malicious window overlap, malicious wins. See docs/lab-setup.md s5.
 
 Pure pandas; unit-testable with small frames.
@@ -16,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
+UNLABELED = "unlabeled"
 REQUIRED_COLUMNS = {"session_id", "host", "label", "start_utc", "end_utc"}
 # Per-run metadata carried from the run log onto each matched event, so later
 # splits can hold out a host / Sysmon config / Defender state without re-running
@@ -45,13 +48,14 @@ def attach_labels(
     events: pd.DataFrame,
     labels: pd.DataFrame,
     *,
-    default_label: str = "benign",
+    default_label: str = UNLABELED,
     default_source: str | None = None,
 ) -> pd.DataFrame:
     """Return events with label/technique_id/source/session_id filled from `labels`.
 
     Malicious windows are applied after benign ones, so on any overlap the
-    malicious label wins.
+    malicious label wins. Events in no window get ``default_label`` (``unlabeled``
+    by default, so setup noise is never silently counted as benign).
     """
     _validate_labels(labels)
     out = events.copy()
@@ -95,12 +99,14 @@ def label_file(
     labels_path: str | Path,
     out_path: str | Path,
     *,
+    default_label: str = UNLABELED,
     default_source: str | None = None,
 ) -> str:
     """Read a normalized Parquet + labels CSV, attach labels, write the result."""
     events = pd.read_parquet(events_path)
     labels = load_labels(labels_path)
-    out = attach_labels(events, labels, default_source=default_source)
+    out = attach_labels(events, labels, default_label=default_label,
+                        default_source=default_source)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(out_path, index=False)
     return str(out_path)
@@ -115,12 +121,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("out", help="output labeled Parquet")
     parser.add_argument("--default-source", default=None,
                         help="source for events outside every window (e.g. lab)")
+    parser.add_argument("--default-label", default=UNLABELED,
+                        choices=[UNLABELED, "benign", "malicious"],
+                        help="label for events outside every window (default: unlabeled, "
+                             "which is excluded from training/evaluation)")
     args = parser.parse_args(argv)
 
-    out = label_file(args.events, args.labels, args.out, default_source=args.default_source)
+    out = label_file(args.events, args.labels, args.out,
+                     default_label=args.default_label, default_source=args.default_source)
     labeled = pd.read_parquet(out)
-    n_mal = int((labeled["label"] == "malicious").sum())
-    print(f"labeled {len(labeled)} events ({n_mal} malicious); wrote {out}")
+    counts = labeled["label"].value_counts().to_dict()
+    print(f"labeled {len(labeled)} events {counts}; wrote {out}")
     return 0
 
 

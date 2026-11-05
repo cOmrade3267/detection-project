@@ -40,6 +40,28 @@ BENIGN = "benign"
 DEFAULT_BUDGET_PER_10K = 100  # alert budget used to set each model's threshold
 
 
+def drop_unlabeled(events: pd.DataFrame) -> pd.DataFrame:
+    """Keep only events inside a labeled benign/malicious window.
+
+    Events outside every window (OS setup, tool installs, prerequisite downloads,
+    idle time) carry no ground truth. Counting them as benign inflates the benign
+    class with attack-prep activity, and lumping them into one host-wide group
+    can swallow the whole train/test split. So they are excluded, with a count.
+    """
+    if "label" not in events.columns:
+        raise ValueError("events have no 'label' column; run `detect.label` first.")
+    lab = events["label"].astype("object")
+    keep = lab.isin([BENIGN, MALICIOUS]).to_numpy()
+    n_drop = int((~keep).sum())
+    if n_drop:
+        print(f"excluded {n_drop} unlabeled event(s) outside every labeled window "
+              f"({n_drop / len(events):.1%} of input); {int(keep.sum())} remain")
+    if not keep.any():
+        raise ValueError("no labeled events remain; check labels.csv windows against "
+                         "the event time range (timezone / host mismatch?).")
+    return events.loc[keep].reset_index(drop=True)
+
+
 # --- metric primitives (each independently testable) -------------------------
 
 def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
@@ -275,6 +297,7 @@ def run_evaluation(
 ) -> EvaluationResult:
     events = events.copy()
     events["timestamp"] = pd.to_datetime(events["timestamp"], utc=True, errors="coerce")
+    events = drop_unlabeled(events)
 
     if holdout == "lab_vs_public":
         # Robustness check: train on the lab, test on the held-out public set.

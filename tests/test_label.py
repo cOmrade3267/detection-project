@@ -46,17 +46,24 @@ def test_event_inside_benign_window_is_benign():
     assert out.loc[2, "session_id"] == "ben-1"
 
 
-def test_event_outside_all_windows_gets_default():
+def test_event_outside_all_windows_is_unlabeled_not_benign():
+    # Setup / prerequisite / idle activity has no ground truth: it must NOT be
+    # silently counted as benign (regression: real lab data had ~87% such events).
     out = label.attach_labels(_events(), _labels(), default_source="lab").set_index("event_record_id")
-    assert out.loc[3, "label"] == "benign"
+    assert out.loc[3, "label"] == label.UNLABELED == "unlabeled"
     assert pd.isna(out.loc[3, "session_id"])
     assert out.loc[3, "source"] == "lab"  # default applied
 
 
+def test_default_label_can_be_overridden():
+    out = label.attach_labels(_events(), _labels(), default_label="benign").set_index("event_record_id")
+    assert out.loc[3, "label"] == "benign"
+
+
 def test_host_mismatch_is_not_labeled_by_other_host_window():
     out = label.attach_labels(_events(), _labels()).set_index("event_record_id")
-    # Same timestamp as the malicious event but on lab02 -> no window -> benign default.
-    assert out.loc[4, "label"] == "benign"
+    # Same timestamp as the malicious event but on lab02 -> no window -> unlabeled.
+    assert out.loc[4, "label"] == "unlabeled"
     assert pd.isna(out.loc[4, "technique_id"])
 
 

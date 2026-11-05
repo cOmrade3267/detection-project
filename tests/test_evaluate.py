@@ -210,3 +210,56 @@ def test_write_reports_creates_files(tmp_path):
     assert (tmp_path / "summary.csv").exists()
     assert (tmp_path / "results.md").exists()
     assert "Evaluation results" in (tmp_path / "results.md").read_text()
+
+
+
+# --- unlabeled events (regression for the first real-data run) ---------------
+
+def test_drop_unlabeled_keeps_only_benign_and_malicious(capsys):
+    ev = pd.DataFrame({"label": ["benign", "unlabeled", "malicious", "unlabeled", None],
+                       "x": range(5)})
+    out = evaluate.drop_unlabeled(ev)
+    assert list(out["label"]) == ["benign", "malicious"]
+    assert list(out["x"]) == [0, 2]          # reindexed, original order kept
+    assert "excluded 3 unlabeled" in capsys.readouterr().out
+
+
+def test_drop_unlabeled_noop_when_all_labeled(capsys):
+    ev = pd.DataFrame({"label": ["benign", "malicious"]})
+    assert len(evaluate.drop_unlabeled(ev)) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_drop_unlabeled_errors_when_nothing_labeled():
+    import pytest
+    with pytest.raises(ValueError, match="no labeled events"):
+        evaluate.drop_unlabeled(pd.DataFrame({"label": ["unlabeled", "unlabeled"]}))
+    with pytest.raises(ValueError, match="no 'label' column"):
+        evaluate.drop_unlabeled(pd.DataFrame({"x": [1]}))
+
+
+def test_giant_unlabeled_host_group_cannot_swallow_the_split():
+    """Real-data bug: ~2,150 unlabeled rows formed one host-wide group that sorted
+    oldest, was pulled into test, and left train empty. After dropping unlabeled
+    rows, only real sessions remain, so both train and test are populated."""
+    from detect.split import session_split
+
+    rows = []
+    t0 = pd.Timestamp("2026-11-05T16:00:00Z")
+    for i in range(500):                       # setup noise, no session
+        rows.append({"host": "H", "session_id": None, "label": "unlabeled", "source": "lab",
+                     "timestamp": t0 + pd.Timedelta(seconds=i)})
+    for k in range(8):                         # 8 real sessions, later in time
+        for j in range(5):
+            rows.append({"host": "H", "session_id": f"s{k}",
+                         "label": "benign" if k % 2 else "malicious", "source": "lab",
+                         "timestamp": t0 + pd.Timedelta(minutes=30 + k, seconds=j)})
+    ev = pd.DataFrame(rows)
+
+    # Old behaviour: everything lands in test, train is empty.
+    train, _ = session_split(ev, test_size=0.25, random_state=0)
+    assert len(train) == 0
+
+    kept = evaluate.drop_unlabeled(ev)
+    train, test = session_split(kept, test_size=0.25, random_state=0)
+    assert len(train) > 0 and len(test) > 0

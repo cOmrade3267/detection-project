@@ -339,10 +339,17 @@ out a host, Sysmon config, or Defender state.
 **Time-window labeling rule:** an event is labeled by the run-log row whose
 `host` matches `Computer` and whose `[start_utc, end_utc]` contains the event
 `timestamp`; it inherits that row's `label`, `technique_id`, `source`, and
-`session_id`. Events on a malicious host **outside** any test window stay benign
-(the revert keeps windows clean). This window→event attachment is the "attach
-labels" step in the README reproduce flow, applied to the normalized Parquet
-before `make evaluate`.
+`session_id`. Events **outside every window** are labeled `unlabeled`, NOT benign:
+they include OS setup, tool installs, Atomic Red Team prerequisite downloads and
+idle time, none of which anyone vouched for. `make evaluate` excludes them from
+training and evaluation (it prints how many). This was changed after the first
+real-data run, where about 87% of events were outside every window and would
+otherwise have been counted as benign, which would have corrupted the
+false-positive numbers and emptied the train split. Clear the Sysmon and Security
+logs (`wevtutil cl ...`) just before taking the clean-baseline snapshot so setup
+noise stays out of the data in the first place. This window→event attachment is
+the "attach labels" step in the README reproduce flow, applied to the normalized
+Parquet before `make evaluate`.
 
 > Keep windows tight (start logging just before the test, stop just after) so
 > background noise isn't mislabeled malicious. Snapshot-revert between tests is
@@ -371,7 +378,8 @@ before `make evaluate`.
    `make label` applies the time-window rule in `src/detect/label.py`: each event
    gets the label of the run-log row whose `host` matches and whose
    `[start_utc, end_utc]` contains the event timestamp (malicious wins on
-   overlap; events outside every window take `SRC`/benign).
+   overlap; events outside every window are `unlabeled`, and `--default-label benign`
+restores the old behavior only if you deliberately want it).
 
 Public held-out sets (EVTX-ATTACK-SAMPLES, hayabusa-sample-evtx) go through the
 same ingest/normalize with `source = public` and are **evaluation-only** — never

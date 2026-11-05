@@ -149,7 +149,7 @@ def test_label_window_boundaries_and_no_overlap():
                             "technique_id": "T1059.001",
                             "start_utc": "2021-03-01T10:00:00Z", "end_utc": "2021-03-01T12:00:00Z"}])
     out = label.attach_labels(events, labels)
-    assert out["label"].tolist() == ["benign", "malicious", "benign"]
+    assert out["label"].tolist() == ["unlabeled", "malicious", "unlabeled"]
     assert out.loc[1, "technique_id"] == "T1059.001"
 
 
