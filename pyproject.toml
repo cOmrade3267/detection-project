@@ -8,23 +8,31 @@ version = "0.0.1"
 description = "Behavioral detection pipeline for Windows host telemetry (Sysmon/Security)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 
-# Pinned with compatible-release (~=) so a re-run reproduces results.
-# Promote to an exact lockfile (pip-tools / uv) once the stack is frozen.
+# Floors here express minimum supported APIs; exact versions are frozen in
+# requirements.lock (`make lock`) for byte-for-byte reproducible runs. This
+# avoids hard pins that lack wheels on newer Python while still pinning what
+# actually gets installed. See README "Reproduce".
 dependencies = [
-    "pandas~=2.2.3",
-    "numpy~=2.1.0",
-    "scikit-learn~=1.5.2",
-    "pyarrow~=17.0",      # Parquet I/O for the normalized event store
-    "pyyaml~=6.0.2",      # Sigma-style rule definitions
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "pyarrow>=17",       # Parquet I/O for the normalized event store
+    "pyyaml>=6",         # Sigma-style rule definitions
+    "evtx>=0.8.7",       # .evtx parser: Rust-backed (pyevtx-rs), JSON output
 ]
 
 [project.optional-dependencies]
+# Pure-Python .evtx parser fallback for platforms without an `evtx` wheel
+# (ARM, Windows w/o Rust). Slower; see docs/design.md.
+parsers-pure = [
+    "python-evtx>=0.7.4",
+]
 dev = [
-    "pytest~=8.3.3",
-    "pytest-cov~=5.0.0",
-    "ruff~=0.6.9",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
 ]
 
 [tool.setuptools.packages.find]
