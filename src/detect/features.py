@@ -47,15 +47,35 @@ _INTEGRITY_ORDER = {
 
 IDENT_COLUMNS = ["process_guid", "host", "session_id", "source", "start_time", "image"]
 LABEL_COLUMNS = ["label", "technique_id"]
-FEATURE_COLUMNS = [
-    "cmdline_length", "cmdline_entropy", "cmdline_has_encoded", "cmdline_has_noprofile",
-    "cmdline_has_hidden", "cmdline_has_base64", "is_lolbin", "image_suspicious_path",
-    "integrity_ordinal", "parent_child_rarity", "child_process_count",
-    "net_conn_count", "net_distinct_dest_ip", "net_distinct_dest_port",
-    "net_uncommon_port_count", "dns_query_count", "file_create_count",
-    "image_load_count", "registry_set_count", "event_count",
-    "duration_seconds", "events_per_minute",
-]
+# Every feature, with the attacker behavior it is meant to capture. This is the
+# source of truth for the design doc and the interview walkthrough; a test
+# asserts FEATURE_COLUMNS and FEATURE_DOC stay in lockstep so no feature ships
+# without a written justification (CLAUDE.md rule 2 / Phase 3).
+FEATURE_DOC: dict[str, str] = {
+    "cmdline_length": "Very long command lines often carry encoded payloads or packed one-liners; benign admin commands are short.",
+    "cmdline_entropy": "High Shannon entropy flags base64/obfuscated content vs. readable commands (T1027).",
+    "cmdline_has_encoded": "PowerShell -EncodedCommand hides script text — a classic execution/obfuscation marker (T1059.001).",
+    "cmdline_has_noprofile": "-NoProfile forces a clean, predictable env; common in automated/malicious PowerShell launchers.",
+    "cmdline_has_hidden": "-WindowStyle Hidden runs with no visible window — user-invisible execution (T1564.003).",
+    "cmdline_has_base64": "A long base64 run in the command line indicates an embedded encoded payload (T1027).",
+    "is_lolbin": "Execution via a living-off-the-land binary (certutil/mshta/rundll32/...) abused to proxy download/exec (T1218/T1105).",
+    "image_suspicious_path": "Execution from Temp/AppData/Downloads/ProgramData — staging/dropper spots normal software rarely runs from.",
+    "integrity_ordinal": "Process integrity level; an unexpectedly elevated/SYSTEM token for a user image can signal privilege abuse (T1548).",
+    "parent_child_rarity": "How rare this parent->child image pair is in benign data; rare lineages (winword->powershell) are strong signals.",
+    "child_process_count": "Process fan-out; one process spawning many children signals scripting/automation or post-exploitation.",
+    "net_conn_count": "Outbound connection volume; beaconing/exfil/scanning raise it well above benign norms.",
+    "net_distinct_dest_ip": "Many distinct destinations from one process suggests scanning or lateral spread.",
+    "net_distinct_dest_port": "Many distinct ports suggests scanning or port-knocking.",
+    "net_uncommon_port_count": "Connections to non-standard ports (e.g. 4444) are typical of C2 / reverse shells.",
+    "dns_query_count": "High DNS volume per process can indicate DNS tunneling or DGA-style beaconing (T1071.004).",
+    "file_create_count": "Bulk file creation can indicate payload drops or ransomware-style mass writes.",
+    "image_load_count": "Unusual module-load volume can indicate injection or DLL side-loading (T1574.002).",
+    "registry_set_count": "Many registry writes can indicate persistence or defense tampering (T1547/T1112).",
+    "event_count": "Total per-process activity volume; anomalous overall profiles deviate from the benign cluster.",
+    "duration_seconds": "Process lifetime; both fire-and-forget and unusually long-lived processes deviate from benign norms.",
+    "events_per_minute": "Burstiness; a short, dense burst of activity is typical of automated attack steps vs. steady human use.",
+}
+FEATURE_COLUMNS = list(FEATURE_DOC)
 
 
 def shannon_entropy(s: str | None) -> float:

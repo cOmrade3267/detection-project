@@ -132,3 +132,17 @@ def test_empty_events_returns_empty_with_schema():
     )
     assert len(out) == 0
     assert list(out.columns) == features.IDENT_COLUMNS + features.LABEL_COLUMNS + features.FEATURE_COLUMNS
+
+
+def test_every_feature_has_a_written_justification():
+    """Phase 3 / CLAUDE.md rule 2: no feature ships without a justification."""
+    assert set(features.FEATURE_COLUMNS) == set(features.FEATURE_DOC)
+    assert all(features.FEATURE_DOC[c].strip() for c in features.FEATURE_COLUMNS)
+
+
+def test_builder_output_columns_match_declared_features():
+    rows = ev(process_guid="{p}", action="process_create",
+              image=r"C:\Windows\System32\cmd.exe", command_line="cmd /c dir")
+    out = FeatureBuilder().fit_transform(pd.DataFrame([rows], columns=_EVENT_COLS))
+    produced = [c for c in out.columns if c in features.FEATURE_COLUMNS]
+    assert set(produced) == set(features.FEATURE_COLUMNS)
