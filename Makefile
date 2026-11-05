@@ -66,4 +66,9 @@ lint:  ## Lint with ruff
 clean:  ## Remove regenerated artifacts
 	rm -rf artifacts figures models
 
-all: ingest normalize features train evaluate  ## Full pipeline
+all:  ## Show the end-to-end pipeline invocation (stages take file args)
+	@echo "Run the stages in order (each writes a Parquet the next reads):"
+	@echo "  make ingest    EVTX=<f.evtx>      OUT=data/raw/f.parquet"
+	@echo "  make normalize IN=data/raw/f.parquet OUT=data/normalized/f.parquet"
+	@echo "  # attach labels, then:"
+	@echo "  make evaluate  EVENTS=data/normalized/labeled.parquet"
