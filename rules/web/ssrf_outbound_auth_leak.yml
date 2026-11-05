@@ -1,0 +1,21 @@
+title: SSRF Credential Forward to Internal Host
+id: ssrf-outbound-auth-leak
+technique: T1552.005
+level: high
+description: >
+  A server-side outbound request to a private / loopback / link-local address
+  that still carries an Authorization header. This is the Verdaccio pattern
+  (PR #6218, fixed in v6.10.3): a publisher-controlled tarball URL is fetched
+  server-side and the uplink's auth header is forwarded to an arbitrary host,
+  leaking the credential. Alerting on auth-bearing requests to internal space
+  catches the credential forward regardless of the exact destination.
+  See docs/from-vulnerability-to-detection.md.
+logsource:
+  action: http_outbound
+detection:
+  selection:
+    action: http_outbound
+    req_auth_present: 'true'
+  internal_dest:
+    dest_ip|re: '^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|::1$|fc|fd)'
+  condition: selection and internal_dest

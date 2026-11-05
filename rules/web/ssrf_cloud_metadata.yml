@@ -1,0 +1,27 @@
+title: SSRF Outbound to Cloud Metadata Endpoint
+id: ssrf-cloud-metadata
+technique: T1552.005
+level: high
+description: >
+  A server-side outbound request to a cloud instance metadata service
+  (169.254.169.254 and friends). The classic SSRF target: reachable only from
+  the host, it returns instance credentials. Log source: outbound/proxy logs of
+  a service that fetches attacker-influenced URLs (e.g. a registry uplink).
+  See docs/from-vulnerability-to-detection.md.
+logsource:
+  action: http_outbound
+detection:
+  selection:
+    action: http_outbound
+  metadata_ip:
+    dest_ip:
+      - '169.254.169.254'
+      - '100.100.200.200'       # Alibaba
+      - 'fd00:ec2::254'         # AWS IMDS over IPv6
+  metadata_host:
+    dest_host|contains:
+      - 'metadata.google.internal'
+      - 'metadata.goog'
+      - 'metadata.azure.com'
+      - '169.254.169.254'
+  condition: selection and (metadata_ip or metadata_host)
