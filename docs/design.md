@@ -26,11 +26,34 @@ routing fields (`event_record_id`, `timestamp`, `provider`, `event_id`,
 `event_json`. All field interpretation (EventData → common schema) is
 `normalize.py`'s job, so ingest never has to change when the schema evolves.
 
-## 2. Common schema and later decisions
+## 2. Common schema (normalize.py)
+
+**Decision:** one wide, mostly-nullable row per event, keyed by a normalized
+`action` verb (`process_create`, `network_connect`, `image_load`,
+`file_create`, `registry_set`, `dns_query`; `unknown` for unmapped). A
+per-`(provider, event_id)` mapper fills the fields relevant to its action; all
+others stay null.
+
+**Why one wide table, not per-type tables:** features and rules are written
+once against a single schema, and process-centric joins (by `process_guid`)
+span event types. A wide nullable frame is simpler to reason about than a star
+of per-type tables for this volume, and Parquet stores the nulls cheaply.
+
+**Covered now:** Sysmon EID 1/3/7/11/13/22 and Security 4688 — the set the
+feature work needs. `event_json` from ingest is retained so an unmapped or
+newly-needed field is always recoverable without re-ingesting.
+
+**EventData shape:** handled both as a named object (`{"Image": ...}`) and as
+the list-of-`Data` form (`[{"@Name": "Image", "#text": ...}]`) that some
+renderers emit, so normalization doesn't depend on one serializer.
+
+**Labels** (`label`, `technique_id`, `source`, `session_id`) are columns on the
+schema but populated later from the lab run log, never inferred here.
+
+## 3. Later decisions
 
 > TODO. Record each remaining decision so it is defensible in an interview:
 >
-> - Common schema: which fields, how Sysmon and Security EIDs map onto it.
 > - Feature set and the justification for each feature (and what was dropped).
 > - Why Isolation Forest (vs. LOF / one-class SVM) and the frequency baseline.
 > - Train/test split strategy and how leakage is prevented + tested.

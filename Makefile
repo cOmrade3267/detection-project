@@ -27,8 +27,11 @@ ingest:  ## .evtx -> Parquet  (usage: make ingest EVTX=in.evtx OUT=out.parquet)
 	@test -n "$(EVTX)" && test -n "$(OUT)" || { echo "usage: make ingest EVTX=<in.evtx> OUT=<out.parquet>"; exit 2; }
 	$(PY) -m detect.ingest "$(EVTX)" "$(OUT)"
 
-normalize:  ## Map Sysmon/Security EIDs -> common schema
-	@echo "TODO: implement src/detect/normalize.py"
+normalize: IN ?=
+normalize: OUT ?=
+normalize:  ## Common schema  (usage: make normalize IN=raw.parquet OUT=norm.parquet)
+	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make normalize IN=<raw.parquet> OUT=<norm.parquet>"; exit 2; }
+	$(PY) -m detect.normalize "$(IN)" "$(OUT)"
 
 features:  ## Build per-process / per-window feature tables
 	@echo "TODO: implement src/detect/features.py"
