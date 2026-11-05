@@ -57,7 +57,9 @@ class _PeakRSS(threading.Thread):
     def __init__(self, interval: float = 0.01) -> None:
         super().__init__(daemon=True)
         self.interval = interval
-        self._stop = threading.Event()
+        # NOT `_stop`: threading.Thread has an internal _stop() that join() calls on
+        # Python 3.12/3.13, so shadowing it with an Event breaks join().
+        self._halt = threading.Event()
         self.peak_bytes = 0
 
     def _rss(self) -> int:
@@ -69,13 +71,13 @@ class _PeakRSS(threading.Thread):
             return 0  # non-Linux / unreadable -> memory reported as 0
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             self.peak_bytes = max(self.peak_bytes, self._rss())
-            self._stop.wait(self.interval)
+            self._halt.wait(self.interval)
 
     def stop(self) -> float:
         self.peak_bytes = max(self.peak_bytes, self._rss())
-        self._stop.set()
+        self._halt.set()
         self.join(timeout=1)
         return self.peak_bytes / (1024 * 1024)
 
