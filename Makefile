@@ -61,9 +61,11 @@ train:  ## Fit Isolation Forest  (usage: make train FEATURES=feat.parquet MODEL=
 
 evaluate: EVENTS ?=
 evaluate: OUTDIR ?= artifacts
-evaluate:  ## Regenerate result tables + figure  (usage: make evaluate EVENTS=norm.parquet)
-	@test -n "$(EVENTS)" || { echo "usage: make evaluate EVENTS=<normalized-labeled.parquet> [OUTDIR=artifacts]"; exit 2; }
-	$(PY) -m detect.evaluate "$(EVENTS)" --outdir "$(OUTDIR)" --rules-dir rules
+evaluate: EXTERNAL ?=
+evaluate: ETOOL ?=
+evaluate:  ## Regenerate result tables + figure  (usage: make evaluate EVENTS=norm.parquet [EXTERNAL=hunt.json ETOOL=chainsaw])
+	@test -n "$(EVENTS)" || { echo "usage: make evaluate EVENTS=<normalized-labeled.parquet> [OUTDIR=artifacts] [EXTERNAL=<out.json> ETOOL=chainsaw|hayabusa]"; exit 2; }
+	$(PY) -m detect.evaluate "$(EVENTS)" --outdir "$(OUTDIR)" --rules-dir rules $(if $(EXTERNAL),--external "$(EXTERNAL)" --external-tool "$(ETOOL)",)
 
 test:  ## Run the pytest suite
 	$(PY) -m pytest

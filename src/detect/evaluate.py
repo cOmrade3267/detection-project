@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score
 
-from . import attack_map
+from . import attack_map, external
 from .features import FeatureBuilder
 from .model import IsolationForestDetector, ZScoreBaseline, alerts_at_budget
 from .rules import RuleEngine, alerts_by_process
@@ -95,6 +95,7 @@ def run_evaluation(
     test_size: float = 0.25,
     random_state: int = 42,
     budget: int | None = None,
+    external_alerts: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     events = events.copy()
     events["timestamp"] = pd.to_datetime(events["timestamp"], utc=True, errors="coerce")
@@ -130,6 +131,16 @@ def run_evaluation(
         "rule_alert": rule_n > 0,
     })
 
+    # External SigmaHQ baseline (Chainsaw/Hayabusa), mapped to the test processes.
+    ext_n = None
+    if external_alerts is not None and not external_alerts.empty:
+        ext_roll = external.alerts_to_process(external_alerts, test_events)
+        if not ext_roll.empty:
+            ext_roll = ext_roll.set_index("process_guid")
+            ext_n = ext_roll["n_alerts"].reindex(guid).fillna(0).to_numpy()
+        else:
+            ext_n = np.zeros(len(guid))
+
     if budget is None:
         budget = int(ev["rule_alert"].sum()) or max(1, round(0.01 * len(ev)))
 
@@ -140,10 +151,12 @@ def run_evaluation(
 
     approaches = {
         "Rules (A)": (ev["rule_alert"].to_numpy(), ev["rule_score"].to_numpy()),
-        "Rarity (B)": (rarity_pred, ev["rarity_score"].to_numpy()),
-        "Isolation Forest": (model_pred, ev["model_score"].to_numpy()),
-        "Combined (rules OR IF)": (combined_pred, combined_score),
     }
+    if ext_n is not None:
+        approaches["External Sigma (Chainsaw/Hayabusa)"] = (ext_n > 0, ext_n.astype(float))
+    approaches["Rarity (B)"] = (rarity_pred, ev["rarity_score"].to_numpy())
+    approaches["Isolation Forest"] = (model_pred, ev["model_score"].to_numpy())
+    approaches["Combined (rules OR IF)"] = (combined_pred, combined_score)
 
     splits = {"all": ev.index.to_numpy()}
     for src in ("lab", "public"):
@@ -255,10 +268,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rules-dir", default="rules")
     parser.add_argument("--test-size", type=float, default=0.25)
     parser.add_argument("--budget", type=int, default=None)
+    parser.add_argument("--external", default=None,
+                        help="Chainsaw/Hayabusa output file to include as the SigmaHQ baseline")
+    parser.add_argument("--external-tool", choices=["chainsaw", "hayabusa"], default=None)
     args = parser.parse_args(argv)
 
+    external_alerts = None
+    if args.external:
+        if not args.external_tool:
+            parser.error("--external requires --external-tool {chainsaw,hayabusa}")
+        external_alerts = external.load_external_alerts(args.external, args.external_tool)
+
     events = pd.read_parquet(args.events)
-    result = run_evaluation(events, rules_dir=args.rules_dir, test_size=args.test_size, budget=args.budget)
+    result = run_evaluation(events, rules_dir=args.rules_dir, test_size=args.test_size,
+                            budget=args.budget, external_alerts=external_alerts)
     written = write_reports(result, args.outdir)
     print(result.summary.round(4).to_string(index=False))
     print(f"\nwrote: {', '.join(str(p) for p in written.values())}")

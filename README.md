@@ -56,6 +56,8 @@ make label     IN=data/lab/normalized/sample.parquet LABELS=data/lab/labels.csv 
                OUT=data/lab/normalized/labeled.parquet SRC=lab
 # evaluate rules + model and regenerate every table and the figure:
 make evaluate  EVENTS=data/lab/normalized/labeled.parquet   # -> artifacts/
+# optionally fold in the external SigmaHQ baseline (Chainsaw/Hayabusa output):
+make evaluate  EVENTS=data/lab/normalized/labeled.parquet EXTERNAL=hunt.json ETOOL=chainsaw
 ```
 
 `make evaluate` writes `artifacts/summary.csv`, `artifacts/results.md`,
