@@ -149,6 +149,36 @@ def test_run_evaluation_has_ablation():
     assert (abl["n_features"] <= full_n).all()
 
 
+def test_update_readme_table_replaces_only_marked_block(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# Title\n\nIntro.\n\n"
+        "<!-- RESULTS_TABLE_START -->\n\n| Approach | TODO |\n\n<!-- RESULTS_TABLE_END -->\n\n"
+        "Trailing prose stays.\n"
+    )
+    summary = pd.DataFrame([
+        {"approach": "Isolation Forest", "split": "all", "recall": 0.5,
+         "precision": 0.25, "pr_auc": 0.4, "fp_per_10k": 120.0},
+        {"approach": "Isolation Forest", "split": "lab", "recall": 0.9,  # must be ignored
+         "precision": 0.9, "pr_auc": 0.9, "fp_per_10k": 1.0},
+    ])
+    assert evaluate.update_readme_table(readme, summary) is True
+    text = readme.read_text()
+    assert "Intro." in text and "Trailing prose stays." in text  # prose preserved
+    assert "| Isolation Forest | 0.500 | 0.250 | 0.400 | 120.000 |" in text  # 'all' row
+    assert "TODO" not in text  # old table gone
+    assert "0.900" not in text  # 'lab' split not written
+
+
+def test_update_readme_table_noop_without_markers(tmp_path):
+    readme = tmp_path / "README.md"
+    readme.write_text("# No markers here\n")
+    summary = pd.DataFrame([{"approach": "x", "split": "all", "recall": 1.0,
+                             "precision": 1.0, "pr_auc": 1.0, "fp_per_10k": 0.0}])
+    assert evaluate.update_readme_table(readme, summary) is False
+    assert readme.read_text() == "# No markers here\n"  # untouched
+
+
 def test_write_reports_creates_files(tmp_path):
     result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
     evaluate.write_reports(result, tmp_path)

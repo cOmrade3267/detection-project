@@ -477,6 +477,46 @@ def write_reports(result: EvaluationResult, outdir: str | Path) -> dict[str, Pat
     return written
 
 
+README_TABLE_START = "<!-- RESULTS_TABLE_START -->"
+README_TABLE_END = "<!-- RESULTS_TABLE_END -->"
+
+
+def format_results_table(summary: pd.DataFrame) -> str:
+    """Build the README results table (overall-test split) as GitHub markdown."""
+    allsplit = summary[summary["split"] == "all"]
+
+    def f(x: object) -> str:
+        return "—" if pd.isna(x) else f"{float(x):.3f}"
+
+    lines = ["| Approach | Recall | Precision | PR-AUC | FP / 10k benign |",
+             "|---|---|---|---|---|"]
+    for _, r in allsplit.iterrows():
+        lines.append(
+            f"| {r['approach']} | {f(r['recall'])} | {f(r['precision'])} "
+            f"| {f(r['pr_auc'])} | {f(r['fp_per_10k'])} |"
+        )
+    return "\n".join(lines)
+
+
+def update_readme_table(readme_path: str | Path, summary: pd.DataFrame) -> bool:
+    """Replace the marked results table in the README from a summary frame.
+
+    Only the block between the START/END markers is touched, so the surrounding
+    prose is preserved. Returns False (no-op) if the markers are absent. This is
+    how `make evaluate` keeps the headline table in sync with the measured
+    numbers -- the numbers are never hand-written (CLAUDE.md rule 1).
+    """
+    path = Path(readme_path)
+    text = path.read_text()
+    if README_TABLE_START not in text or README_TABLE_END not in text:
+        return False
+    pre = text.split(README_TABLE_START)[0]
+    post = text.split(README_TABLE_END)[1]
+    table = format_results_table(summary)
+    path.write_text(f"{pre}{README_TABLE_START}\n\n{table}\n\n{README_TABLE_END}{post}")
+    return True
+
+
 def _maybe_write_figure(result: EvaluationResult, path: Path) -> Path | None:
     """Grouped bar chart of per-technique recall; skipped if matplotlib absent."""
     try:
@@ -526,6 +566,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="alert budget per 10k processes (sets model thresholds on validation)")
     parser.add_argument("--n-boot", type=int, default=1000,
                         help="bootstrap resamples for confidence intervals")
+    parser.add_argument("--readme", default="README.md",
+                        help="README whose results table is refreshed from summary.csv")
+    parser.add_argument("--no-update-readme", action="store_true",
+                        help="do not rewrite the README results table")
     parser.add_argument("--external", default=None,
                         help="Chainsaw/Hayabusa output file to include as the SigmaHQ baseline")
     parser.add_argument("--external-tool", choices=["chainsaw", "hayabusa"], default=None)
@@ -544,6 +588,12 @@ def main(argv: list[str] | None = None) -> int:
     written = write_reports(result, args.outdir)
     print(result.summary.round(4).to_string(index=False))
     print(f"\nwrote: {', '.join(str(p) for p in written.values())}")
+
+    if not args.no_update_readme and Path(args.readme).exists():
+        if update_readme_table(args.readme, result.summary):
+            print(f"updated results table in {args.readme}")
+        else:
+            print(f"note: {args.readme} has no RESULTS_TABLE markers; left unchanged")
     return 0
 
 
