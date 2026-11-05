@@ -155,9 +155,17 @@ before `make evaluate`.
    ```bash
    make ingest    EVTX=data/lab/raw/sysmon_<session>.evtx OUT=data/lab/raw/<session>.parquet
    make normalize IN=data/lab/raw/<session>.parquet       OUT=data/lab/normalized/<session>.parquet
-   # attach labels.csv (time-window rule, section 5), concat sessions, then:
+   # attach labels.csv (time-window rule, section 5):
+   make label     IN=data/lab/normalized/<session>.parquet LABELS=data/lab/labels.csv \
+                  OUT=data/lab/normalized/<session>-labeled.parquet SRC=lab
+   # concat labeled sessions into one Parquet, then:
    make evaluate  EVENTS=data/lab/normalized/labeled.parquet
    ```
+
+   `make label` applies the time-window rule in `src/detect/label.py`: each event
+   gets the label of the run-log row whose `host` matches and whose
+   `[start_utc, end_utc]` contains the event timestamp (malicious wins on
+   overlap; events outside every window take `SRC`/benign).
 
 Public held-out sets (EVTX-ATTACK-SAMPLES, hayabusa-sample-evtx) go through the
 same ingest/normalize with `source = public` and are **evaluation-only** — never

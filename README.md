@@ -49,11 +49,13 @@ make test       # run the test suite (incl. the no-leakage split check)
 Then run the pipeline per stage (each writes a Parquet the next one reads):
 
 ```bash
-make ingest    EVTX=data/public/sample.evtx OUT=data/raw/sample.parquet
-make normalize IN=data/raw/sample.parquet   OUT=data/normalized/sample.parquet
-# attach labels (label / technique_id / source / session_id) per docs/lab-setup.md,
-# then evaluate rules + model and regenerate every table and the figure:
-make evaluate  EVENTS=data/normalized/labeled.parquet   # -> artifacts/
+make ingest    EVTX=data/lab/raw/sample.evtx  OUT=data/lab/raw/sample.parquet
+make normalize IN=data/lab/raw/sample.parquet OUT=data/lab/normalized/sample.parquet
+# attach labels from the run log (time-window rule, docs/lab-setup.md s5):
+make label     IN=data/lab/normalized/sample.parquet LABELS=data/lab/labels.csv \
+               OUT=data/lab/normalized/labeled.parquet SRC=lab
+# evaluate rules + model and regenerate every table and the figure:
+make evaluate  EVENTS=data/lab/normalized/labeled.parquet   # -> artifacts/
 ```
 
 `make evaluate` writes `artifacts/summary.csv`, `artifacts/results.md`,

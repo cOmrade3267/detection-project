@@ -3,7 +3,7 @@
 # Each prints what it will do so the pipeline order is self-documenting.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lock ingest normalize features rules train evaluate test lint clean all
+.PHONY: help setup lock ingest normalize label features rules train evaluate test lint clean all
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -32,6 +32,14 @@ normalize: OUT ?=
 normalize:  ## Common schema  (usage: make normalize IN=raw.parquet OUT=norm.parquet)
 	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make normalize IN=<raw.parquet> OUT=<norm.parquet>"; exit 2; }
 	$(PY) -m detect.normalize "$(IN)" "$(OUT)"
+
+label: IN ?=
+label: LABELS ?=
+label: OUT ?=
+label: SRC ?=
+label:  ## Attach run-log labels  (usage: make label IN=norm.parquet LABELS=labels.csv OUT=labeled.parquet [SRC=lab])
+	@test -n "$(IN)" && test -n "$(LABELS)" && test -n "$(OUT)" || { echo "usage: make label IN=<norm.parquet> LABELS=<labels.csv> OUT=<labeled.parquet> [SRC=lab]"; exit 2; }
+	$(PY) -m detect.label "$(IN)" "$(LABELS)" "$(OUT)" $(if $(SRC),--default-source "$(SRC)",)
 
 features: IN ?=
 features: OUT ?=
