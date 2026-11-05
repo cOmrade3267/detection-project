@@ -108,7 +108,33 @@ is deferred to evaluation at a **fixed alert budget** (`alerts_at_budget`), so
 rules and model are compared at equal alert volume rather than at arbitrary
 cutoffs. Models persist via joblib for a reproducible `make train` → score flow.
 
-## 5. Later decisions
+## 5. Rules (rules.py) — Baseline A
+
+**A small, hand-rolled Sigma-style engine, not a pySigma dependency.** It reads
+YAML rules from `rules/` and matches them against the normalized common-schema
+events. A deliberately scoped subset of Sigma is supported so it's honest to
+call it "Sigma-style" without pulling the full spec:
+
+- `detection` holds named selection blocks; a block is an AND over its field
+  specs, a list value is OR, and `field|all` makes a list AND.
+- Field modifiers: `contains`, `startswith`, `endswith`, `re`, default equals.
+  String comparisons are case-insensitive (Sigma semantics).
+- `condition` is a boolean expression over block names (`and`/`or`/`not`/
+  parentheses), evaluated via a restricted AST walk — no `eval`, only BoolOp/
+  UnaryOp/Name nodes, so a rule file can't execute arbitrary code.
+
+**Why hand-rolled:** the project must not copy rules/code from other repos
+(CLAUDE.md s3). Writing the engine and the rules originals keeps licensing clean
+(SigmaHQ is only a reference for *ideas*), keeps the dependency surface small,
+and makes every match defensible in an interview. SigmaHQ via Chainsaw/Hayabusa
+remains the **external** baseline run separately in evaluation.
+
+**Output:** event-level alerts (rule id/title, `technique_id`, level,
+`process_guid`, timestamp). `alerts_by_process` rolls them up to the
+per-process unit the model uses, so Baseline A and the model compare on the same
+rows. Each rule ships with a positive and a negative test event under `tests/`.
+
+## 6. Later decisions
 
 > TODO. Record each remaining decision so it is defensible in an interview:
 >

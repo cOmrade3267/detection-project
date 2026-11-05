@@ -3,7 +3,7 @@
 # Each prints what it will do so the pipeline order is self-documenting.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lock ingest normalize features train evaluate test lint clean all
+.PHONY: help setup lock ingest normalize features rules train evaluate test lint clean all
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -38,6 +38,12 @@ features: OUT ?=
 features:  ## Per-process features  (usage: make features IN=norm.parquet OUT=feat.parquet)
 	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make features IN=<norm.parquet> OUT=<feat.parquet>"; exit 2; }
 	$(PY) -m detect.features "$(IN)" "$(OUT)"
+
+rules: IN ?=
+rules: OUT ?=
+rules:  ## Sigma-style rule scan  (usage: make rules IN=norm.parquet OUT=alerts.parquet)
+	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make rules IN=<norm.parquet> OUT=<alerts.parquet>"; exit 2; }
+	$(PY) -m detect.rules "$(IN)" "$(OUT)" --rules-dir rules
 
 train: FEATURES ?=
 train: MODEL ?=

@@ -1,0 +1,20 @@
+title: Mshta Remote Payload Execution
+id: mshta-remote-payload
+technique: T1218.005
+level: high
+description: >
+  mshta.exe executing a remote HTA/script payload (signed-binary proxy
+  execution). Matches an http(s) reference or a scriptlet moniker. Original rule.
+logsource:
+  action: process_create
+detection:
+  selection_image:
+    action: process_create
+    image|endswith: '\mshta.exe'
+  selection_remote:
+    command_line|contains:
+      - 'http://'
+      - 'https://'
+      - 'javascript:'
+      - 'vbscript:'
+  condition: selection_image and selection_remote

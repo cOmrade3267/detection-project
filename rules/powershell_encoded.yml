@@ -1,0 +1,19 @@
+title: Encoded PowerShell Command
+id: ps-encoded-command
+technique: T1059.001
+level: high
+description: >
+  PowerShell launched with an encoded command, a common way to hide malicious
+  script payloads. Original rule (SigmaHQ used only as an idea reference).
+logsource:
+  action: process_create
+detection:
+  selection_image:
+    action: process_create
+    image|endswith: '\powershell.exe'
+  selection_flags:
+    command_line|contains:
+      - '-enc'
+      - '-encodedcommand'
+      - '-ec '
+  condition: selection_image and selection_flags

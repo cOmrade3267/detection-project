@@ -1,0 +1,19 @@
+title: Certutil Remote File Download
+id: certutil-download
+technique: T1105
+level: high
+description: >
+  certutil.exe used to download a remote file (LOLBin ingress tool transfer):
+  a URL cache fetch or a verb pointing at an http(s) resource. Original rule.
+logsource:
+  action: process_create
+detection:
+  selection_image:
+    action: process_create
+    image|endswith: '\certutil.exe'
+  selection_download:
+    command_line|contains:
+      - '-urlcache'
+      - 'http://'
+      - 'https://'
+  condition: selection_image and selection_download
