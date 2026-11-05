@@ -84,7 +84,7 @@ def _events():
 
 
 def test_run_evaluation_end_to_end():
-    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4)
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
     s = result.summary
     assert set(s["approach"]) == {
         "Rules (A)", "Rarity (B)", "Isolation Forest",
@@ -107,15 +107,37 @@ def test_run_evaluation_end_to_end():
 
 
 def test_run_evaluation_explanations_present():
-    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4)
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
     # Rule-alerted malicious processes must carry an explanation with their rule.
     assert "top_features" in result.explanations.columns
     assert "rules" in result.explanations.columns
     assert not result.explanations.empty  # the malicious procs are rule-covered
 
 
+def test_bootstrap_ci_wraps_point_and_orders_bounds():
+    rng = np.random.default_rng(0)
+    y = np.array([0, 0, 0, 1, 1, 1, 0, 0, 1, 1], dtype=bool)
+    groups = np.array(["a", "a", "b", "b", "c", "c", "d", "d", "e", "e"])
+    pred = y.copy()  # perfect predictor
+    score = y.astype(float)
+    ci = evaluate.bootstrap_ci(y, groups, {"perfect": (pred, score)}, n_boot=200, seed=1)
+    for _, r in ci.iterrows():
+        assert r["ci_lo"] <= r["point"] <= r["ci_hi"] or np.isnan(r["point"])
+    rec = ci[ci["metric"] == "recall"].iloc[0]
+    assert rec["point"] == 1.0  # perfect predictor recalls all
+
+    _ = rng  # determinism documented; seed drives the draws
+
+
+def test_run_evaluation_has_confidence_intervals():
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
+    assert set(result.ci["metric"]) == {"recall", "precision", "fp_per_10k", "pr_auc"}
+    # Every approach in the summary also has CIs.
+    assert set(result.ci["approach"]) == set(result.summary["approach"])
+
+
 def test_write_reports_creates_files(tmp_path):
-    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4)
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4, n_boot=50)
     evaluate.write_reports(result, tmp_path)
     assert (tmp_path / "summary.csv").exists()
     assert (tmp_path / "results.md").exists()

@@ -106,7 +106,7 @@ def test_evaluate_includes_external_approach():
         "event_id": 1, "level": "high", "rule_title": "x",
         "technique_id": mal["technique_id"].to_numpy(),
     })
-    result = evaluate.run_evaluation(events, rules_dir=RULES_DIR, test_size=0.4, external_alerts=ext)
+    result = evaluate.run_evaluation(events, rules_dir=RULES_DIR, test_size=0.4, n_boot=50, external_alerts=ext)
     assert "External Sigma (Chainsaw/Hayabusa)" in set(result.summary["approach"])
     ext_all = result.summary[(result.summary["approach"] == "External Sigma (Chainsaw/Hayabusa)")
                              & (result.summary["split"] == "all")].iloc[0]

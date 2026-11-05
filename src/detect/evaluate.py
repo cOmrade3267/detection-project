@@ -77,6 +77,64 @@ def pr_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
     return float(average_precision_score(y_true, np.asarray(scores, dtype="float64")))
 
 
+def bootstrap_ci(
+    y_true: np.ndarray,
+    groups: np.ndarray,
+    approaches: dict[str, tuple[np.ndarray, np.ndarray]],
+    *,
+    metrics: tuple[str, ...] = ("recall", "precision", "fp_per_10k", "pr_auc"),
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """95% bootstrap CIs for each approach's metrics, resampling whole SESSIONS.
+
+    A single test set gives one number per metric; a reviewer wants to know how
+    stable it is. We resample sessions (not rows) with replacement so the
+    interval reflects between-session variance -- the real source of noise when
+    there are few hosts/sessions -- rather than pretending every process is
+    independent. Returns one row per (approach, metric) with lo/hi (2.5/97.5
+    percentiles) and the point estimate.
+    """
+    y_true = np.asarray(y_true, dtype=bool)
+    groups = np.asarray(groups, dtype=object)
+    uniq = np.unique(groups)
+    idx_by_group = {g: np.where(groups == g)[0] for g in uniq}
+    rng = np.random.default_rng(seed)
+
+    def _metric(name: str, y: np.ndarray, pred: np.ndarray, score: np.ndarray) -> float:
+        if name == "recall":
+            return binary_metrics(y, pred)["recall"]
+        if name == "precision":
+            return binary_metrics(y, pred)["precision"]
+        if name == "fp_per_10k":
+            return fp_per_10k_benign(y, pred)
+        if name == "pr_auc":
+            return pr_auc(y, score)
+        raise ValueError(f"unknown metric {name}")
+
+    # Pre-draw resamples once (same session draws for every approach -> comparable).
+    draws = [rng.choice(uniq, size=len(uniq), replace=True) for _ in range(n_boot)]
+    samples = [np.concatenate([idx_by_group[g] for g in d]) for d in draws]
+
+    rows = []
+    for name, (pred, score) in approaches.items():
+        pred = np.asarray(pred)
+        score = np.asarray(score)
+        for metric in metrics:
+            point = _metric(metric, y_true, pred, score)
+            vals = np.array(
+                [_metric(metric, y_true[s], pred[s], score[s]) for s in samples],
+                dtype="float64",
+            )
+            vals = vals[np.isfinite(vals)]
+            lo, hi = (np.percentile(vals, [2.5, 97.5]) if len(vals) else (np.nan, np.nan))
+            rows.append({
+                "approach": name, "metric": metric, "point": point,
+                "ci_lo": lo, "ci_hi": hi, "n_boot": len(vals),
+            })
+    return pd.DataFrame(rows)
+
+
 # --- evaluation result container --------------------------------------------
 
 @dataclass
@@ -85,6 +143,7 @@ class EvaluationResult:
     per_technique: pd.DataFrame      # approach x technique recall (overall test)
     eval_table: pd.DataFrame         # per-process scores + preds + explanation
     explanations: pd.DataFrame       # per-alert top features + matching rules
+    ci: pd.DataFrame                 # bootstrap 95% CIs (approach x metric), overall test
     thresholds: dict[str, float]     # model -> validation-chosen score cut
     budget_per_10k: int              # alert budget the thresholds target
 
@@ -167,6 +226,7 @@ def run_evaluation(
     val_size: float = 0.25,
     random_state: int = 42,
     budget_per_10k: int = DEFAULT_BUDGET_PER_10K,
+    n_boot: int = 1000,
     external_alerts: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     events = events.copy()
@@ -211,11 +271,16 @@ def run_evaluation(
     lof_score = lof.anomaly_score(test_feats)
     rarity_score = rarity.anomaly_score(test_feats)
 
+    # Bootstrap resamples over sessions, so carry the group key per process.
+    group = test_feats["session_id"].astype("object")
+    group = group.where(group.notna(), test_feats["host"].astype("object")).to_numpy()
+
     ev = pd.DataFrame({
         "process_guid": guid.to_numpy(),
         "label": test_feats["label"].astype("object").to_numpy(),
         "technique_id": test_feats["technique_id"].astype("object").to_numpy(),
         "source": test_feats["source"].astype("object").to_numpy(),
+        "group": group,
         "model_score": model_score,
         "lof_score": lof_score,
         "rarity_score": rarity_score,
@@ -290,6 +355,10 @@ def run_evaluation(
         )
     per_technique = tech if tech is not None else pd.DataFrame()
 
+    # Bootstrap CIs on the overall test split, resampling sessions.
+    y_all = (ev["label"].to_numpy() == MALICIOUS)
+    ci = bootstrap_ci(y_all, ev["group"].to_numpy(), approaches, n_boot=n_boot, seed=random_state)
+
     alerted = ev.loc[
         ev["alerted_any"], ["process_guid", "label", "technique_id", "top_features", "rules"]
     ].copy()
@@ -298,6 +367,7 @@ def run_evaluation(
         per_technique=per_technique,
         eval_table=ev,
         explanations=alerted,
+        ci=ci,
         thresholds=thresholds,
         budget_per_10k=budget_per_10k,
     )
@@ -323,12 +393,19 @@ def write_reports(result: EvaluationResult, outdir: str | Path) -> dict[str, Pat
           "## Per-technique recall (overall test)", "",
           (result.per_technique.round(4).to_markdown(index=False)
            if not result.per_technique.empty else "_No malicious processes in test._"),
+          "", "## 95% confidence intervals (bootstrap over sessions, overall test)", "",
+          (result.ci.round(4).to_markdown(index=False)
+           if not result.ci.empty else "_No CIs._"),
           "", "## Sample alert explanations (top contributing features + rules)", "",
           (result.explanations.head(20).to_markdown(index=False)
            if not result.explanations.empty else "_No alerts._"),
           ""]
     (out / "results.md").write_text("\n".join(md))
     written["results_md"] = out / "results.md"
+
+    if not result.ci.empty:
+        result.ci.to_csv(out / "confidence_intervals.csv", index=False)
+        written["ci_csv"] = out / "confidence_intervals.csv"
 
     if not result.explanations.empty:
         result.explanations.to_csv(out / "alert_explanations.csv", index=False)
@@ -390,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="fraction of TRAIN held out as validation for thresholds")
     parser.add_argument("--budget-per-10k", type=int, default=DEFAULT_BUDGET_PER_10K,
                         help="alert budget per 10k processes (sets model thresholds on validation)")
+    parser.add_argument("--n-boot", type=int, default=1000,
+                        help="bootstrap resamples for confidence intervals")
     parser.add_argument("--external", default=None,
                         help="Chainsaw/Hayabusa output file to include as the SigmaHQ baseline")
     parser.add_argument("--external-tool", choices=["chainsaw", "hayabusa"], default=None)
@@ -404,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     events = pd.read_parquet(args.events)
     result = run_evaluation(events, rules_dir=args.rules_dir, test_size=args.test_size,
                             val_size=args.val_size, budget_per_10k=args.budget_per_10k,
-                            external_alerts=external_alerts)
+                            n_boot=args.n_boot, external_alerts=external_alerts)
     written = write_reports(result, args.outdir)
     print(result.summary.round(4).to_string(index=False))
     print(f"\nwrote: {', '.join(str(p) for p in written.values())}")
