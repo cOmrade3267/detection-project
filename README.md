@@ -1,5 +1,7 @@
 # Behavioral Detection Pipeline for Windows Host Telemetry
 
+[![CI](https://github.com/cOmrade3267/detection-project/actions/workflows/ci.yml/badge.svg)](https://github.com/cOmrade3267/detection-project/actions/workflows/ci.yml)
+
 Ingest Windows Sysmon/Security event logs, build per-process behavioral
 features, detect attacker behavior with (a) hand-written Sigma-style rules and
 (b) an unsupervised anomaly model, map alerts to MITRE ATT&CK, and evaluate
