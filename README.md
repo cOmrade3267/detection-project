@@ -119,9 +119,13 @@ Honest scope — these hold regardless of the (pending) measured numbers:
   is recorded in `docs/lab-setup.md`.
 - **Public samples are attack-only, not production traffic.** They're an
   eval-only held-out set; precision can't be measured on them (no benign).
-- **Not tested at scale.** This is a single-host batch pipeline; fleet-scale
-  design (streaming, per-host baselines, serving, cost) is discussed, not built,
-  in [`docs/scaling.md`](docs/scaling.md).
+- **Not tested at fleet scale.** This is a single-host batch pipeline. Reduced:
+  `make scale-benchmark` measures ingest/feature **throughput, peak memory, and
+  scoring latency at 1×/10×/100× volume** on synthetic data, plus a fit-once-
+  score-many incremental prototype (`src/detect/bench.py`). Remaining caveat:
+  it's a **single machine, not a fleet** — fleet design (streaming, per-host
+  baselines, serving, cost) stays a discussion in
+  [`docs/scaling.md`](docs/scaling.md). No "scales to millions of hosts" claim.
 - **Evasion.** What the design can and cannot detect, and how an attacker evades
   it (living-off-the-land, slow-and-low, poisoning), is in
   [`docs/threat-model.md`](docs/threat-model.md).

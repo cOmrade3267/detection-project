@@ -3,7 +3,7 @@
 # Each prints what it will do so the pipeline order is self-documenting.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lock ingest doctor normalize label features rules train evaluate test coverage lint clean smoke all
+.PHONY: help setup lock ingest doctor normalize label features rules train evaluate test coverage lint clean smoke scale-benchmark all
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -92,6 +92,11 @@ smoke:  ## Run the label-free pipeline on the committed fixture (CI sanity check
 	$(PY) -m detect.features $$tmp/norm.parquet $$tmp/feat.parquet; \
 	$(PY) -m detect.rules $$tmp/norm.parquet $$tmp/alerts.parquet --rules-dir rules; \
 	rm -rf $$tmp; echo "smoke OK"
+
+scale-benchmark: BASE ?= 10000
+scale-benchmark: FACTORS ?= 1,10,100
+scale-benchmark:  ## Synthetic scale benchmark (throughput/memory/latency) -> artifacts/
+	$(PY) -m detect.bench --base $(BASE) --factors $(FACTORS) --outdir artifacts
 
 ALL_RUN := data/_run
 all: EVTX ?=

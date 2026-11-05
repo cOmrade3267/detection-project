@@ -5,6 +5,13 @@
 > for fleet scale, which is the question a hyper-scale host-defense team asks.
 > Nothing below is implemented; where the current code already does the right
 > thing in miniature, it's called out.
+>
+> **Measured counterpart:** `make scale-benchmark` (`src/detect/bench.py`) runs a
+> reproducible **synthetic** benchmark — ingest/normalize/feature throughput,
+> peak memory, and model-scoring latency at 1×/10×/100× event volume, plus a
+> fit-once-score-many incremental prototype. It is a **single machine, not a
+> fleet**, and synthetic workload data only (never detection-quality numbers).
+> It grounds the claims below in real timings instead of hand-waving.
 
 ## What the current design assumes
 
@@ -42,7 +49,9 @@ Score each process in near-real-time with a lightweight model (Isolation Forest
 or the rarity baseline are cheap) loaded per cohort; retrain in batch offline and
 **canary** new models before fleet rollout. Monitor feature and score **drift**
 per cohort, because benign behavior shifts (patch days, new software) and a stale
-baseline turns into an alert storm.
+baseline turns into an alert storm. The **fit-once-score-many** pattern this
+relies on is prototyped and measured by `make scale-benchmark` (train once, score
+new batches without refitting — the per-batch scoring cost is far below a refit).
 
 ### 5. Thresholds and the alert budget, fleet-wide
 The validation-chosen budget generalizes: give each cohort an alerts-per-10k
