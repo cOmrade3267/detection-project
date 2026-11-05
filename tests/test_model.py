@@ -7,9 +7,11 @@ import pytest
 from detect.features import FEATURE_COLUMNS
 from detect.model import (
     IsolationForestDetector,
+    LOFDetector,
     ZScoreBaseline,
     alerts_at_budget,
     select_features,
+    threshold_at_rate,
 )
 
 
@@ -38,6 +40,50 @@ def test_zscore_baseline_scores_outliers_above_normals():
     base = ZScoreBaseline().fit_on_benign(df)
     scores = base.anomaly_score(df)
     assert scores[-n_out:].min() > np.median(scores[:n_normal])
+
+
+def test_lof_scores_outliers_above_normals():
+    df, n_normal, n_out = make_features()
+    det = LOFDetector().fit_on_benign(df)
+    scores = det.anomaly_score(df)
+    assert scores[-n_out:].min() > np.median(scores[:n_normal])
+
+
+def test_lof_nan_and_before_fit():
+    df, _, _ = make_features(nan=True)
+    det = LOFDetector().fit_on_benign(df)
+    assert np.isfinite(det.anomaly_score(df)).all()
+    with pytest.raises(RuntimeError, match="before fit"):
+        LOFDetector().anomaly_score(df)
+
+
+def test_lof_save_load_roundtrip(tmp_path):
+    df, _, _ = make_features()
+    det = LOFDetector().fit_on_benign(df)
+    loaded = LOFDetector.load(det.save(tmp_path / "lof.joblib"))
+    assert np.allclose(loaded.anomaly_score(df), det.anomaly_score(df))
+
+
+def test_threshold_at_rate_sets_validation_alert_fraction():
+    val = np.arange(100.0)  # 0..99
+    # 10% rate -> threshold such that ~10 of 100 validation rows alert (score >= thr).
+    thr = threshold_at_rate(val, 0.10)
+    assert (val >= thr).sum() == 10
+    # Edge rates.
+    assert threshold_at_rate(val, 0.0) == float("inf")      # alert on nothing
+    assert threshold_at_rate(val, 1.0) == float("-inf")     # alert on everything
+    assert threshold_at_rate(np.array([]), 0.1) == float("inf")
+
+
+def test_threshold_from_validation_not_test():
+    """A threshold picked on benign validation generalizes to flag test outliers."""
+    df, _n_normal, n_out = make_features()
+    det = IsolationForestDetector().fit_on_benign(df)
+    val_scores = det.anomaly_score(df[df["label"] == "benign"])
+    thr = threshold_at_rate(val_scores, 0.02)  # 2% budget on validation
+    test_scores = det.anomaly_score(df)
+    flagged = test_scores >= thr
+    assert flagged[-n_out:].all()  # planted outliers exceed the validation cut
 
 
 def test_isolation_forest_is_reproducible():
