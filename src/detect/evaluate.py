@@ -270,12 +270,23 @@ def run_evaluation(
     random_state: int = 42,
     budget_per_10k: int = DEFAULT_BUDGET_PER_10K,
     n_boot: int = 1000,
+    holdout: str = "session",
     external_alerts: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     events = events.copy()
     events["timestamp"] = pd.to_datetime(events["timestamp"], utc=True, errors="coerce")
 
-    train_idx, test_idx = session_split(events, test_size=test_size, random_state=random_state)
+    if holdout == "lab_vs_public":
+        # Robustness check: train on the lab, test on the held-out public set.
+        src = events["source"].astype("object").to_numpy()
+        train_idx = np.where(src == "lab")[0]
+        test_idx = np.where(src == "public")[0]
+        if len(train_idx) == 0 or len(test_idx) == 0:
+            raise ValueError("lab_vs_public holdout needs both 'lab' and 'public' sources.")
+    elif holdout == "session":
+        train_idx, test_idx = session_split(events, test_size=test_size, random_state=random_state)
+    else:
+        raise ValueError(f"unknown holdout '{holdout}'; use 'session' or 'lab_vs_public'")
     assert_no_leakage(events, train_idx, test_idx)
     train_events = events.iloc[train_idx]
     test_events = events.iloc[test_idx]
@@ -566,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="alert budget per 10k processes (sets model thresholds on validation)")
     parser.add_argument("--n-boot", type=int, default=1000,
                         help="bootstrap resamples for confidence intervals")
+    parser.add_argument("--holdout", choices=["session", "lab_vs_public"], default="session",
+                        help="'session' time-split, or 'lab_vs_public' robustness check")
     parser.add_argument("--readme", default="README.md",
                         help="README whose results table is refreshed from summary.csv")
     parser.add_argument("--no-update-readme", action="store_true",
@@ -584,12 +597,15 @@ def main(argv: list[str] | None = None) -> int:
     events = pd.read_parquet(args.events)
     result = run_evaluation(events, rules_dir=args.rules_dir, test_size=args.test_size,
                             val_size=args.val_size, budget_per_10k=args.budget_per_10k,
-                            n_boot=args.n_boot, external_alerts=external_alerts)
+                            n_boot=args.n_boot, holdout=args.holdout,
+                            external_alerts=external_alerts)
     written = write_reports(result, args.outdir)
     print(result.summary.round(4).to_string(index=False))
     print(f"\nwrote: {', '.join(str(p) for p in written.values())}")
 
-    if not args.no_update_readme and Path(args.readme).exists():
+    # Only the primary session-holdout run owns the headline README table; the
+    # lab_vs_public robustness run must not clobber it.
+    if args.holdout == "session" and not args.no_update_readme and Path(args.readme).exists():
         if update_readme_table(args.readme, result.summary):
             print(f"updated results table in {args.readme}")
         else:

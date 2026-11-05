@@ -76,10 +76,14 @@ make evaluate  EVENTS=data/lab/normalized/labeled.parquet   # -> artifacts/
 make evaluate  EVENTS=data/lab/normalized/labeled.parquet EXTERNAL=hunt.json ETOOL=chainsaw
 ```
 
-`make evaluate` writes `artifacts/summary.csv`, `artifacts/results.md`,
-`artifacts/per_technique_recall.csv` and `.png`. The **Results** table above is
-filled from `artifacts/summary.csv` — it stays `TODO` until the pipeline is run
-on real data (no number is hand-written). `make help` lists every target.
+`make evaluate` writes `artifacts/summary.csv`, `results.md`,
+`per_technique_recall.csv`/`.png`, `confidence_intervals.csv` (bootstrap 95% CIs
+over sessions), `ablation.csv` (drop-one-feature-group), and
+`alert_explanations.csv` (top contributing features + matching rule per alert),
+and rewrites the **Results** table above from `summary.csv`. It stays `TODO`
+until run on real data (no number is hand-written). For the cross-distribution
+robustness check, add `--holdout lab_vs_public` (trains on lab, tests on public;
+does not touch the README). `make help` lists every target.
 
 Dependency versions are floored in `pyproject.toml` and the exact installed set
 is frozen in `requirements.lock` (`make lock`) for byte-for-byte reproducible

@@ -149,6 +149,31 @@ def test_run_evaluation_has_ablation():
     assert (abl["n_features"] <= full_n).all()
 
 
+def test_lab_vs_public_robustness_holdout():
+    """Train on lab, test on public: the test set is public-only, no leakage."""
+    result = evaluate.run_evaluation(
+        _events(), rules_dir=RULES_DIR, holdout="lab_vs_public", n_boot=30
+    )
+    assert set(result.eval_table["source"].dropna()) == {"public"}  # tested on public only
+    assert "all" in set(result.summary["split"])
+
+
+def test_validation_carveout_is_group_leakage_free():
+    """Extend the leakage guarantee to the new fit/validation split (Phase 3/4)."""
+    from detect.split import group_labels
+    events = _events()
+    events["timestamp"] = pd.to_datetime(events["timestamp"], utc=True)
+    train_idx, _test = evaluate.session_split(events, test_size=0.4)
+    train_events = events.iloc[train_idx]
+    fit_events, val_events = evaluate._carve_validation(
+        train_events, val_size=0.25, random_state=42
+    )
+    if len(val_events):  # only meaningful when a validation set was carved
+        fit_groups = set(group_labels(fit_events))
+        val_groups = set(group_labels(val_events))
+        assert fit_groups.isdisjoint(val_groups)  # no session spans fit and val
+
+
 def test_update_readme_table_replaces_only_marked_block(tmp_path):
     readme = tmp_path / "README.md"
     readme.write_text(
