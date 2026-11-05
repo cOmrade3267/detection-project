@@ -24,12 +24,30 @@ param(
 
 . "$PSScriptRoot\_labels.ps1"
 
+# Fail loudly: a label row must NEVER be written for a test that did not run,
+# or the dataset gets an empty "malicious" window (a silent labeling bug).
+$ErrorActionPreference = "Stop"
+
+# Load Invoke-AtomicRedTeam if this session has not already.
+if (-not (Get-Command Invoke-AtomicTest -ErrorAction SilentlyContinue)) {
+    $mod = "C:\AtomicRedTeam\invoke-atomicredteam\Invoke-AtomicRedTeam.psd1"
+    if (-not (Test-Path $mod)) { throw "Atomic Red Team not found at $mod. Install it first (docs/lab-setup.md 1a step 4)." }
+    Import-Module $mod -Force
+}
+if (-not (Get-Command Invoke-AtomicTest -ErrorAction SilentlyContinue)) {
+    throw "Invoke-AtomicTest is still unavailable after importing the module."
+}
+
 $runId = New-RunId "r"
 $testArg = @{}
 if ($PSBoundParameters.ContainsKey("TestNumber")) { $testArg["TestNumbers"] = $TestNumber }
 
 Write-Host "=== $TechniqueId (test $TestNumber) run $runId ===" -ForegroundColor Cyan
-Invoke-AtomicTest $TechniqueId @testArg -GetPrereqs
+
+# Prereqs may need the internet. On the isolated network that can fail; warn,
+# do not abort (fetch them while on NAT, before the clean-baseline snapshot).
+try { Invoke-AtomicTest $TechniqueId @testArg -GetPrereqs }
+catch { Write-Warning "GetPrereqs failed (offline?): $($_.Exception.Message)" }
 
 $start = (Get-Date).ToUniversalTime()
 Invoke-AtomicTest $TechniqueId @testArg

@@ -13,8 +13,10 @@ Windows host, Sysmon, and Atomic Red Team.
 
 ```powershell
 # allow local scripts for this session only:
-Set-ExecutionPolicy -Scope Process -Bypass
-cd C:\path\to\scripts\collect
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+# the repo zip was downloaded, so Windows marks the scripts as "from the internet":
+Get-ChildItem C:\lab\detection-project-main -Recurse -File | Unblock-File
+cd C:\lab\detection-project-main\scripts\collect
 ```
 
 Pass the same metadata flags on every call so each row is tagged for the later
