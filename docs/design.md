@@ -84,29 +84,44 @@ are never fed to the model.
 
 ## 4. Models (model.py)
 
-**Isolation Forest (primary) + z-score baseline (B).** Both consume the
+**Three detectors with one interface — z-score baseline (B), Isolation Forest
+(primary), Local Outlier Factor (comparison).** All consume the
 `FEATURE_COLUMNS` matrix, impute missing values with a **median learned on
 train**, and emit an anomaly score where **higher = more anomalous**. Fitting is
-on the training split only (ideally benign rows — `fit_on_benign`), matching the
+on the training split only, benign rows (`fit_on_benign`), matching the
 unsupervised premise: learn "normal", flag outliers.
 
-**Why Isolation Forest:** little labeled attack data in production, so we learn
-the benign manifold unsupervised. IF isolates outliers with random splits — near
-log-linear, few hyper-parameters, no distance metric to tune, and it handles the
-mixed-scale, long-tailed features here better than distance methods. LOF and
-one-class SVM are left as optional comparisons (both scale worse and SVM is
-kernel/scale-sensitive). IF is split-based so it is scale-invariant; we impute
-but don't standardize for it.
+**Why Isolation Forest (primary):** little labeled attack data in production, so
+we learn the benign manifold unsupervised. IF isolates outliers with random
+splits — near log-linear, few hyper-parameters, no distance metric to tune, and
+split-based so **scale-invariant** (we impute but don't standardize it).
 
-**Why the z-score baseline:** the ML model must beat something trivial. The
+**Why also LOF:** a second model with a *different inductive bias* is a fairer
+test than one model vs. a trivial baseline. Local Outlier Factor is
+density/distance-based — it flags points sparse relative to their local
+neighbourhood, catching anomalies IF's axis-aligned splits can miss. Because it
+is distance-based it **is standardized** (impute → scale → LOF), and run in
+`novelty=True` mode so it scores unseen test rows. *Rejected alternative:*
+one-class SVM — kernel- and scale-sensitive with an extra `nu`/`gamma` to tune
+and worse scaling; LOF gives the contrasting bias more cheaply.
+
+**Why the z-score baseline:** the ML models must beat something trivial. The
 baseline standardizes each feature on train (mean/std) and scores a process by
 its **mean absolute z** across features — a pure "how unusual is this row"
-number. If IF can't beat it on PR-AUC, IF isn't earning its complexity.
+number. If IF/LOF can't beat it on PR-AUC, they aren't earning their complexity.
 
-**Scores, not hard labels:** detectors return continuous scores; thresholding
-is deferred to evaluation at a **fixed alert budget** (`alerts_at_budget`), so
-rules and model are compared at equal alert volume rather than at arbitrary
-cutoffs. Models persist via joblib for a reproducible `make train` → score flow.
+**Scores → threshold on validation, never test.** Detectors return continuous
+scores. The alert threshold is set at a **fixed budget** (default 100 alerts per
+10k processes) by taking that quantile of scores on a **validation split carved
+from train** (`threshold_at_rate`), then applied unchanged to test — so the cut
+never sees test data (the leakage a reviewer checks). *Rejected alternative:*
+top-k on the test scores (`alerts_at_budget`, kept for same-volume comparisons)
+— it tunes the threshold on the very set being measured. Models persist via
+joblib for a reproducible `make train` → score flow.
+
+**Explainability:** every alert carries its top contributing features (the
+features most elevated vs. the benign mean, in σ) and any matching rule ids, so
+an analyst gets a "why" for triage, not just a score (`artifacts/alert_explanations.csv`).
 
 ## 5. Rules (rules.py) — Baseline A
 

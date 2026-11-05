@@ -86,8 +86,14 @@ def _events():
 def test_run_evaluation_end_to_end():
     result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4)
     s = result.summary
-    assert set(s["approach"]) == {"Rules (A)", "Rarity (B)", "Isolation Forest", "Combined (rules OR IF)"}
+    assert set(s["approach"]) == {
+        "Rules (A)", "Rarity (B)", "Isolation Forest",
+        "Local Outlier Factor", "Combined (rules OR IF)",
+    }
     assert "public" in set(s["split"])  # public forced into test
+
+    # Thresholds were chosen (one per unsupervised model) and are finite/+inf.
+    assert set(result.thresholds) == {"Isolation Forest", "Local Outlier Factor", "Rarity (B)"}
 
     # All synthetic malicious processes are rule-covered -> Rules recall == 1.0.
     rules_col = result.per_technique["Rules (A)"].dropna()
@@ -98,6 +104,14 @@ def test_run_evaluation_end_to_end():
     assert all_rows.loc["Combined (rules OR IF)", "recall"] >= all_rows.loc["Rules (A)", "recall"]
     # Metrics are finite where defined.
     assert np.isfinite(all_rows.loc["Rules (A)", "pr_auc"])
+
+
+def test_run_evaluation_explanations_present():
+    result = evaluate.run_evaluation(_events(), rules_dir=RULES_DIR, test_size=0.4)
+    # Rule-alerted malicious processes must carry an explanation with their rule.
+    assert "top_features" in result.explanations.columns
+    assert "rules" in result.explanations.columns
+    assert not result.explanations.empty  # the malicious procs are rule-covered
 
 
 def test_write_reports_creates_files(tmp_path):

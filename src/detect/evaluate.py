@@ -24,13 +24,20 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 
 from . import attack_map, external
-from .features import FeatureBuilder
-from .model import IsolationForestDetector, ZScoreBaseline, alerts_at_budget
+from .features import FEATURE_COLUMNS, FeatureBuilder
+from .model import (
+    IsolationForestDetector,
+    LOFDetector,
+    ZScoreBaseline,
+    select_features,
+    threshold_at_rate,
+)
 from .rules import RuleEngine, alerts_by_process
 from .split import assert_no_leakage, session_split
 
 MALICIOUS = "malicious"
 BENIGN = "benign"
+DEFAULT_BUDGET_PER_10K = 100  # alert budget used to set each model's threshold
 
 
 # --- metric primitives (each independently testable) -------------------------
@@ -76,8 +83,10 @@ def pr_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
 class EvaluationResult:
     summary: pd.DataFrame            # approach x split metrics
     per_technique: pd.DataFrame      # approach x technique recall (overall test)
-    eval_table: pd.DataFrame         # per-process scores + preds (for inspection)
-    budget: int
+    eval_table: pd.DataFrame         # per-process scores + preds + explanation
+    explanations: pd.DataFrame       # per-alert top features + matching rules
+    thresholds: dict[str, float]     # model -> validation-chosen score cut
+    budget_per_10k: int              # alert budget the thresholds target
 
 
 # --- the pipeline ------------------------------------------------------------
@@ -88,13 +97,76 @@ def _norm_scores(x: np.ndarray) -> np.ndarray:
     return (x - lo) / (hi - lo) if hi > lo else np.zeros_like(x)
 
 
+def _benign(feats: pd.DataFrame) -> pd.DataFrame:
+    return feats[feats["label"].astype("object") == BENIGN]
+
+
+def _carve_validation(
+    train_events: pd.DataFrame, *, val_size: float, random_state: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split train into fit/validation by session for threshold selection.
+
+    Falls back to (train, empty) when train has too few sessions to split, in
+    which case thresholds are picked in-sample on the fit set (documented
+    optimism; real lab data has enough benign sessions for a true held-out val).
+    """
+    te = train_events.reset_index(drop=True)
+    try:
+        fit_idx, val_idx = session_split(te, test_size=val_size, random_state=random_state)
+    except (ValueError, IndexError):
+        # Too few sessions to split -> no held-out validation (see docstring).
+        return train_events, train_events.iloc[0:0]
+    if len(val_idx) == 0 or len(fit_idx) == 0:
+        return train_events, train_events.iloc[0:0]
+    return te.iloc[fit_idx], te.iloc[val_idx]
+
+
+def _threshold(model, val_feats: pd.DataFrame, fit_feats: pd.DataFrame, rate: float) -> float:
+    """Pick a score cut on validation benign, falling back to fit benign."""
+    vb = _benign(val_feats)
+    ref = vb if len(vb) else _benign(fit_feats)
+    if len(ref) == 0:
+        ref = fit_feats
+    return threshold_at_rate(model.anomaly_score(ref), rate)
+
+
+def _explain(
+    test_feats: pd.DataFrame, fit_feats: pd.DataFrame, rules_by_guid: pd.Series, top_n: int = 3
+) -> pd.DataFrame:
+    """Per-process triage context: the features most elevated vs. benign, + rules.
+
+    Standardize test features by the benign mean/std (learned on the fit set),
+    then name the top-`top_n` features by positive z. Gives an analyst "why" for
+    each alert -- the contributing features and any matching rule ids.
+    """
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler
+
+    fb = _benign(fit_feats)
+    ref = fb if len(fb) else fit_feats
+    Xb = select_features(ref)
+    imp = SimpleImputer(strategy="median").fit(Xb)
+    scaler = StandardScaler().fit(imp.transform(Xb))
+    Z = scaler.transform(imp.transform(select_features(test_feats)))
+
+    rows = []
+    for i, guid in enumerate(test_feats["process_guid"].to_numpy()):
+        z = Z[i]
+        order = np.argsort(z)[::-1][:top_n]
+        top = [f"{FEATURE_COLUMNS[j]}(+{z[j]:.1f}σ)" for j in order if np.isfinite(z[j]) and z[j] > 0]
+        rules = rules_by_guid.get(guid, "")
+        rows.append({"process_guid": guid, "top_features": ", ".join(top), "rules": rules or ""})
+    return pd.DataFrame(rows)
+
+
 def run_evaluation(
     events: pd.DataFrame,
     *,
     rules_dir: str | Path = "rules",
     test_size: float = 0.25,
+    val_size: float = 0.25,
     random_state: int = 42,
-    budget: int | None = None,
+    budget_per_10k: int = DEFAULT_BUDGET_PER_10K,
     external_alerts: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     events = events.copy()
@@ -105,31 +177,58 @@ def run_evaluation(
     train_events = events.iloc[train_idx]
     test_events = events.iloc[test_idx]
 
-    builder = FeatureBuilder().fit(train_events)
-    train_feats = builder.transform(train_events)
+    # Carve a validation split from train; thresholds are set here, never on test.
+    fit_events, val_events = _carve_validation(
+        train_events, val_size=val_size, random_state=random_state
+    )
+
+    builder = FeatureBuilder().fit(fit_events)
+    fit_feats = builder.transform(fit_events)
+    val_feats = builder.transform(val_events) if len(val_events) else fit_feats.iloc[0:0]
     test_feats = builder.transform(test_events)
     if test_feats.empty:
         raise ValueError("No processes in the test split; need process_create events.")
 
-    iforest = IsolationForestDetector(random_state=random_state).fit_on_benign(train_feats)
-    rarity = ZScoreBaseline().fit_on_benign(train_feats)
+    iforest = IsolationForestDetector(random_state=random_state).fit_on_benign(fit_feats)
+    lof = LOFDetector().fit_on_benign(fit_feats)
+    rarity = ZScoreBaseline().fit_on_benign(fit_feats)
+
+    rate = budget_per_10k / 10_000.0
+    thresholds = {
+        "Isolation Forest": _threshold(iforest, val_feats, fit_feats, rate),
+        "Local Outlier Factor": _threshold(lof, val_feats, fit_feats, rate),
+        "Rarity (B)": _threshold(rarity, val_feats, fit_feats, rate),
+    }
 
     engine = RuleEngine.from_dir(rules_dir)
     rolled = alerts_by_process(engine.scan(test_events)).set_index("process_guid")
 
     guid = test_feats["process_guid"]
     rule_n = rolled["n_alerts"].reindex(guid).fillna(0).to_numpy() if not rolled.empty else np.zeros(len(guid))
+    rules_by_guid = rolled["rules"] if not rolled.empty else pd.Series(dtype="object")
+
+    model_score = iforest.anomaly_score(test_feats)
+    lof_score = lof.anomaly_score(test_feats)
+    rarity_score = rarity.anomaly_score(test_feats)
 
     ev = pd.DataFrame({
         "process_guid": guid.to_numpy(),
         "label": test_feats["label"].astype("object").to_numpy(),
         "technique_id": test_feats["technique_id"].astype("object").to_numpy(),
         "source": test_feats["source"].astype("object").to_numpy(),
-        "model_score": iforest.anomaly_score(test_feats),
-        "rarity_score": rarity.anomaly_score(test_feats),
+        "model_score": model_score,
+        "lof_score": lof_score,
+        "rarity_score": rarity_score,
         "rule_score": rule_n.astype("float64"),
         "rule_alert": rule_n > 0,
     })
+
+    # Predictions: each model alerts where its test score clears the VALIDATION cut.
+    model_pred = model_score >= thresholds["Isolation Forest"]
+    lof_pred = lof_score >= thresholds["Local Outlier Factor"]
+    rarity_pred = rarity_score >= thresholds["Rarity (B)"]
+    combined_pred = ev["rule_alert"].to_numpy() | model_pred
+    combined_score = _norm_scores(model_score) + ev["rule_alert"].to_numpy().astype(float)
 
     # External SigmaHQ baseline (Chainsaw/Hayabusa), mapped to the test processes.
     ext_n = None
@@ -141,22 +240,22 @@ def run_evaluation(
         else:
             ext_n = np.zeros(len(guid))
 
-    if budget is None:
-        budget = int(ev["rule_alert"].sum()) or max(1, round(0.01 * len(ev)))
-
-    model_pred = alerts_at_budget(ev["model_score"].to_numpy(), budget)
-    rarity_pred = alerts_at_budget(ev["rarity_score"].to_numpy(), budget)
-    combined_pred = ev["rule_alert"].to_numpy() | model_pred
-    combined_score = _norm_scores(ev["model_score"].to_numpy()) + ev["rule_alert"].to_numpy().astype(float)
-
     approaches = {
         "Rules (A)": (ev["rule_alert"].to_numpy(), ev["rule_score"].to_numpy()),
     }
     if ext_n is not None:
         approaches["External Sigma (Chainsaw/Hayabusa)"] = (ext_n > 0, ext_n.astype(float))
-    approaches["Rarity (B)"] = (rarity_pred, ev["rarity_score"].to_numpy())
-    approaches["Isolation Forest"] = (model_pred, ev["model_score"].to_numpy())
+    approaches["Rarity (B)"] = (rarity_pred, rarity_score)
+    approaches["Isolation Forest"] = (model_pred, model_score)
+    approaches["Local Outlier Factor"] = (lof_pred, lof_score)
     approaches["Combined (rules OR IF)"] = (combined_pred, combined_score)
+
+    # Explainability + an any-alert flag on the per-process table.
+    explanations = _explain(test_feats, fit_feats, rules_by_guid)
+    ev["alerted_any"] = (
+        ev["rule_alert"].to_numpy() | model_pred | lof_pred | rarity_pred
+    )
+    ev = ev.merge(explanations, on="process_guid", how="left")
 
     splits = {"all": ev.index.to_numpy()}
     for src in ("lab", "public"):
@@ -191,7 +290,17 @@ def run_evaluation(
         )
     per_technique = tech if tech is not None else pd.DataFrame()
 
-    return EvaluationResult(summary=summary, per_technique=per_technique, eval_table=ev, budget=budget)
+    alerted = ev.loc[
+        ev["alerted_any"], ["process_guid", "label", "technique_id", "top_features", "rules"]
+    ].copy()
+    return EvaluationResult(
+        summary=summary,
+        per_technique=per_technique,
+        eval_table=ev,
+        explanations=alerted,
+        thresholds=thresholds,
+        budget_per_10k=budget_per_10k,
+    )
 
 
 # --- reporting ---------------------------------------------------------------
@@ -204,16 +313,26 @@ def write_reports(result: EvaluationResult, outdir: str | Path) -> dict[str, Pat
     result.summary.to_csv(out / "summary.csv", index=False)
     written["summary_csv"] = out / "summary.csv"
 
+    thr = " · ".join(f"{k}: {v:.3f}" for k, v in result.thresholds.items())
     md = ["# Evaluation results", "",
-          f"Fixed alert budget: **{result.budget}** processes.", "",
+          (f"Alert budget: **{result.budget_per_10k}** per 10k processes "
+           "(thresholds chosen on a validation split, not on test)."), "",
+          f"Validation-chosen score thresholds — {thr}", "",
           "## Metrics by approach and split", "",
           result.summary.round(4).to_markdown(index=False), "",
           "## Per-technique recall (overall test)", "",
           (result.per_technique.round(4).to_markdown(index=False)
            if not result.per_technique.empty else "_No malicious processes in test._"),
+          "", "## Sample alert explanations (top contributing features + rules)", "",
+          (result.explanations.head(20).to_markdown(index=False)
+           if not result.explanations.empty else "_No alerts._"),
           ""]
     (out / "results.md").write_text("\n".join(md))
     written["results_md"] = out / "results.md"
+
+    if not result.explanations.empty:
+        result.explanations.to_csv(out / "alert_explanations.csv", index=False)
+        written["explanations_csv"] = out / "alert_explanations.csv"
 
     if not result.per_technique.empty:
         result.per_technique.to_csv(out / "per_technique_recall.csv", index=False)
@@ -267,7 +386,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--outdir", default="artifacts", help="directory for tables/figures")
     parser.add_argument("--rules-dir", default="rules")
     parser.add_argument("--test-size", type=float, default=0.25)
-    parser.add_argument("--budget", type=int, default=None)
+    parser.add_argument("--val-size", type=float, default=0.25,
+                        help="fraction of TRAIN held out as validation for thresholds")
+    parser.add_argument("--budget-per-10k", type=int, default=DEFAULT_BUDGET_PER_10K,
+                        help="alert budget per 10k processes (sets model thresholds on validation)")
     parser.add_argument("--external", default=None,
                         help="Chainsaw/Hayabusa output file to include as the SigmaHQ baseline")
     parser.add_argument("--external-tool", choices=["chainsaw", "hayabusa"], default=None)
@@ -281,7 +403,8 @@ def main(argv: list[str] | None = None) -> int:
 
     events = pd.read_parquet(args.events)
     result = run_evaluation(events, rules_dir=args.rules_dir, test_size=args.test_size,
-                            budget=args.budget, external_alerts=external_alerts)
+                            val_size=args.val_size, budget_per_10k=args.budget_per_10k,
+                            external_alerts=external_alerts)
     written = write_reports(result, args.outdir)
     print(result.summary.round(4).to_string(index=False))
     print(f"\nwrote: {', '.join(str(p) for p in written.values())}")
