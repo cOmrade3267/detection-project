@@ -7,7 +7,9 @@ against Chainsaw/Hayabusa as a rules-only baseline — reporting precision,
 recall, and false-positive volume.
 
 > Design brief and working rules: [`CLAUDE.md`](CLAUDE.md). Design decisions:
-> [`docs/design.md`](docs/design.md). From a real vulnerability to detections:
+> [`docs/design.md`](docs/design.md). Which Sigma features the rule engine
+> supports: [`docs/sigma-support.md`](docs/sigma-support.md). From a real
+> vulnerability to detections:
 > [`docs/from-vulnerability-to-detection.md`](docs/from-vulnerability-to-detection.md).
 
 ## Research questions

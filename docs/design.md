@@ -120,10 +120,18 @@ call it "Sigma-style" without pulling the full spec:
 - Field modifiers: `contains`, `startswith`, `endswith`, `re`, default equals.
   String comparisons are case-insensitive (Sigma semantics).
 - `condition` is a boolean expression over block names (`and`/`or`/`not`/
-  parentheses), evaluated via a restricted AST walk — no `eval`, only BoolOp/
+  parentheses), plus Sigma's `all of them` / `1 of them` / `all|1 of <prefix>*`
+  shorthand, evaluated via a restricted AST walk — no `eval`, only BoolOp/
   UnaryOp/Name nodes, so a rule file can't execute arbitrary code.
+- It also loads **standard SigmaHQ-format YAML** for this subset: Windows field
+  names are mapped to the schema, `logsource.category` scopes the rule to an
+  action, and `attack.*` tags set the technique. Any unsupported modifier is
+  **rejected at load** (never silently mismatched). The exact supported/rejected
+  matrix is in [`sigma-support.md`](sigma-support.md).
 
-**Why hand-rolled:** the project must not copy rules/code from other repos
+**Why hand-rolled (not pySigma):** pySigma *converts* rules to SIEM queries; it
+doesn't execute them on a DataFrame, so it would add a heavy dependency and still
+need an executor. The project must not copy rules/code from other repos
 (CLAUDE.md s3). Writing the engine and the rules originals keeps licensing clean
 (SigmaHQ is only a reference for *ideas*), keeps the dependency surface small,
 and makes every match defensible in an interview. SigmaHQ via Chainsaw/Hayabusa
