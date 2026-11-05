@@ -4,6 +4,9 @@ data/
 *.evtx
 *.parquet
 *.jsonl
+# Exception: one tiny, permissively-licensed sample committed as a test fixture
+# so the real-parser integration test runs in CI (provenance in its README).
+!tests/fixtures/sysmon.evtx
 
 # --- Python ---
 __pycache__/

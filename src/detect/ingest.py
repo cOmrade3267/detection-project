@@ -24,6 +24,7 @@ import argparse
 import json
 import sys
 import time
+import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,12 +55,48 @@ COLUMNS: dict[str, str] = {
 }
 
 
-def evtx_to_records(path: str | Path) -> Iterator[dict[str, Any]]:
+def _iter_tolerant(records: Iterable[dict[str, Any]], *, strict: bool) -> Iterator[dict[str, Any]]:
+    """Yield from the parser's record stream, surviving a mid-file parse error.
+
+    Real .evtx are routinely "dirty": a log allocates fixed-size chunks and
+    leaves the unused tail zero-filled, so pyevtx-rs raises when it reaches the
+    first blank chunk. The generator cannot be resumed once it raises (the
+    binding validates chunks eagerly and offers no per-chunk skip), so we
+    recover every record up to that point and stop.
+
+    This truncates on a *mid*-file corruption, which would silently under-count
+    detections -- so we warn loudly with the recovered count, and ``strict=True``
+    re-raises instead for runs that must fail on any unreadable byte.
+    """
+    iterator = iter(records)
+    recovered = 0
+    while True:
+        try:
+            record = next(iterator)
+        except StopIteration:
+            return
+        except Exception as exc:  # parser chunk/record failure
+            if strict:
+                raise
+            warnings.warn(
+                f"evtx parse stopped after {recovered} records: {exc}. "
+                "Recovered records emitted; tail (if any) skipped. "
+                "Re-run with strict=True to fail instead.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        recovered += 1
+        yield record
+
+
+def evtx_to_records(path: str | Path, *, strict: bool = False) -> Iterator[dict[str, Any]]:
     """Yield raw records from an .evtx file as ``{event_record_id, timestamp, data}``.
 
     ``data`` is the event's JSON *string*, exactly as pyevtx-rs emits it. The
     parser is imported here so importing this module (and unit-testing the
-    helpers) never requires the native extension.
+    helpers) never requires the native extension. A parse error partway through
+    a dirty log is tolerated (see :func:`_iter_tolerant`) unless ``strict``.
     """
     try:
         from evtx import PyEvtxParser
@@ -71,7 +108,7 @@ def evtx_to_records(path: str | Path) -> Iterator[dict[str, Any]]:
         ) from exc
 
     parser = PyEvtxParser(str(path))
-    yield from parser.records_json()
+    yield from _iter_tolerant(parser.records_json(), strict=strict)
 
 
 def _event_id(system: dict[str, Any]) -> Any:
@@ -116,13 +153,28 @@ def extract_common_fields(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _clean_timestamps(series: pd.Series) -> pd.Series:
+    """Parse the parser's timestamp strings to UTC, tolerating its quirks.
+
+    pyevtx-rs renders timestamps like ``2017-12-26T13:10:29.1368792Z UTC`` -- an
+    ISO instant with a trailing `` UTC`` zone *name* appended after the ``Z``.
+    pandas can't parse that compound form and coerces the whole column to NaT,
+    which would silently null every timestamp (breaking the time split, label
+    windows, and doctor's range). Strip a trailing zone-name word before parsing.
+    """
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        # Not already parsed (object/string/str across pandas versions): drop a
+        # trailing zone-NAME word (" UTC"); the preceding Z/offset already fixes
+        # the zone, so this leaves a string pandas can parse.
+        series = series.astype("string").str.replace(r"\s+UTC\s*$", "", regex=True, case=False)
+    return pd.to_datetime(series, utc=True, errors="coerce").astype(TIMESTAMP_DTYPE)
+
+
 def records_to_frame(records: Iterable[dict[str, Any]]) -> pd.DataFrame:
     """Build a typed DataFrame from raw records, with a stable schema even if empty."""
     rows = [extract_common_fields(r) for r in records]
     frame = pd.DataFrame(rows, columns=list(COLUMNS))
-    frame["timestamp"] = pd.to_datetime(
-        frame["timestamp"], utc=True, errors="coerce"
-    ).astype(TIMESTAMP_DTYPE)
+    frame["timestamp"] = _clean_timestamps(frame["timestamp"])
     for col, dtype in COLUMNS.items():
         if col == "timestamp":
             continue

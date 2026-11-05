@@ -7,6 +7,7 @@ present under tests/fixtures/ (see tests/fixtures/README.md).
 """
 
 import json
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -129,6 +130,52 @@ def test_ingest_stats_events_per_sec():
     assert stats.events_per_sec == 2000.0
 
 
+# --- regression: real-log quirks the sysmon.evtx fixture exposed -------------
+
+
+def test_dirty_chunk_recovers_prefix_and_warns():
+    """A parse error mid-stream (zero-filled chunk) must recover prior records,
+    not discard the whole file. Regression for the DIRTY sysmon.evtx fixture."""
+
+    def flaky():
+        yield _record(SYSMON_PROC_CREATE, record_id=1)
+        yield _record(SYSMON_PROC_CREATE, record_id=2)
+        raise RuntimeError("Failed to parse chunk number 9: Invalid EVTX chunk header magic")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        recovered = list(ingest._iter_tolerant(flaky(), strict=False))
+    assert [r["event_record_id"] for r in recovered] == [1, 2]  # prefix kept
+    assert any("parse stopped after 2 records" in str(w.message) for w in caught)
+
+
+def test_strict_mode_reraises_parse_error():
+    def flaky():
+        yield _record(SYSMON_PROC_CREATE, record_id=1)
+        raise RuntimeError("bad chunk")
+
+    with pytest.raises(RuntimeError, match="bad chunk"):
+        list(ingest._iter_tolerant(flaky(), strict=True))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2017-12-26T13:10:29.1368792Z UTC",  # pyevtx-rs form: trailing zone word
+        "2017-12-26T13:10:29.1368792Z utc",  # case-insensitive
+        "2017-12-26T13:10:29.1368792Z",      # already clean, must still parse
+    ],
+)
+def test_timestamp_trailing_utc_word_is_parsed_not_nulled(raw):
+    """pyevtx-rs appends ' UTC' after the Z; without stripping it pandas nulls
+    the whole column. Regression for the sysmon.evtx fixture timestamps."""
+    frame = ingest.records_to_frame([_record(SYSMON_PROC_CREATE, timestamp=raw)])
+    ts = frame.loc[0, "timestamp"]
+    assert pd.notna(ts)
+    assert ts.year == 2017 and ts.hour == 13
+    assert str(frame["timestamp"].dtype) == "datetime64[ns, UTC]"
+
+
 # --- Integration: real parser, gated on a sample file ------------------------
 
 _samples = sorted(FIXTURES.glob("*.evtx")) if FIXTURES.exists() else []
@@ -136,10 +183,15 @@ _samples = sorted(FIXTURES.glob("*.evtx")) if FIXTURES.exists() else []
 
 @pytest.mark.skipif(not _samples, reason="no sample .evtx under tests/fixtures/")
 def test_ingest_real_evtx_file(tmp_path):
-    stats = ingest.ingest_file(_samples[0], tmp_path / "events.parquet")
+    # The committed sysmon.evtx is deliberately dirty, so tolerant ingest warns.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        stats = ingest.ingest_file(_samples[0], tmp_path / "events.parquet")
     assert stats.rows > 0
     assert stats.events_per_sec > 0
     frame = pd.read_parquet(stats.out_path)
     assert len(frame) == stats.rows
     assert list(frame.columns) == list(ingest.COLUMNS)
     assert frame["event_id"].notna().any()
+    # The Z-UTC timestamp fix: real timestamps must parse, not become NaT.
+    assert frame["timestamp"].notna().any()
