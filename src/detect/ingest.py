@@ -23,11 +23,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# Default records per Parquet row group when streaming. Big enough to amortize
+# per-chunk overhead, small enough that peak memory stays flat on huge files.
+DEFAULT_CHUNK_SIZE = 50_000
 
 # Canonical timestamp dtype. Fixed explicitly because pandas >=3 infers the
 # datetime resolution from the input (us for parsed ISO strings, s for empty),
@@ -132,20 +138,107 @@ def write_parquet(frame: pd.DataFrame, out_path: str | Path) -> Path:
     return out
 
 
-def ingest_file(evtx_path: str | Path, out_path: str | Path) -> Path:
-    """Convert a single .evtx file to a Parquet event store. Returns the output path."""
-    frame = records_to_frame(evtx_to_records(evtx_path))
-    return write_parquet(frame, out_path)
+def iter_record_frames(
+    records: Iterable[dict[str, Any]], chunk_size: int = DEFAULT_CHUNK_SIZE
+) -> Iterator[pd.DataFrame]:
+    """Yield typed DataFrames of at most ``chunk_size`` rows from a record stream.
+
+    Streaming keeps peak memory bounded by one chunk instead of the whole log,
+    which matters on multi-GB .evtx files. Each chunk goes through
+    ``records_to_frame`` so every chunk carries the identical, forced schema.
+    """
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1")
+    batch: list[dict[str, Any]] = []
+    for record in records:
+        batch.append(record)
+        if len(batch) >= chunk_size:
+            yield records_to_frame(batch)
+            batch = []
+    if batch:
+        yield records_to_frame(batch)
+
+
+@dataclass
+class IngestStats:
+    """Reproducible throughput numbers from one ingest run."""
+
+    rows: int
+    seconds: float
+    out_path: Path
+
+    @property
+    def events_per_sec(self) -> float:
+        return self.rows / self.seconds if self.seconds > 0 else float("nan")
+
+
+def write_parquet_stream(
+    frames: Iterable[pd.DataFrame], out_path: str | Path
+) -> tuple[Path, int]:
+    """Write typed frames to one Parquet file as successive row groups.
+
+    Uses a single ``ParquetWriter`` so memory stays flat regardless of file
+    size. The schema is pinned from an empty typed frame, so an all-null chunk
+    (e.g. a run of unmapped events) can't drift the column types between row
+    groups. Returns ``(path, total_rows)``; always writes a valid, schema-correct
+    file even when the stream is empty.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    schema = pa.Table.from_pandas(records_to_frame([]), preserve_index=False).schema
+    writer = pq.ParquetWriter(out, schema)
+    total = 0
+    try:
+        for frame in frames:
+            if frame.empty:
+                continue
+            table = pa.Table.from_pandas(frame, schema=schema, preserve_index=False)
+            writer.write_table(table)
+            total += frame.shape[0]
+    finally:
+        writer.close()
+    return out, total
+
+
+def ingest_file(
+    evtx_path: str | Path,
+    out_path: str | Path,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+) -> IngestStats:
+    """Stream a single .evtx file to a Parquet event store in bounded memory.
+
+    Returns :class:`IngestStats` (row count, wall-clock seconds, output path) so
+    throughput is measured by the same path that does the real work -- no
+    separate, divergent benchmark code.
+    """
+    start = time.perf_counter()
+    frames = iter_record_frames(evtx_to_records(evtx_path), chunk_size=chunk_size)
+    out, rows = write_parquet_stream(frames, out_path)
+    return IngestStats(rows=rows, seconds=time.perf_counter() - start, out_path=out)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Convert an .evtx file to Parquet.")
     parser.add_argument("evtx", type=Path, help="input .evtx file")
     parser.add_argument("out", type=Path, help="output .parquet file")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=f"records per Parquet row group (default {DEFAULT_CHUNK_SIZE})",
+    )
     args = parser.parse_args(argv)
 
-    out = ingest_file(args.evtx, args.out)
-    print(f"wrote {out}")
+    stats = ingest_file(args.evtx, args.out, chunk_size=args.chunk_size)
+    print(
+        f"wrote {stats.out_path} "
+        f"({stats.rows} events in {stats.seconds:.2f}s, "
+        f"{stats.events_per_sec:,.0f} events/sec)"
+    )
     return 0
 
 

@@ -89,6 +89,46 @@ def test_write_parquet_roundtrip(tmp_path):
     assert back.loc[0, "event_id"] == 1
 
 
+# --- streaming / scale -------------------------------------------------------
+
+
+def test_iter_record_frames_chunks_and_covers_all_rows():
+    records = [_record(SYSMON_PROC_CREATE, record_id=i) for i in range(5)]
+    frames = list(ingest.iter_record_frames(records, chunk_size=2))
+    assert [len(f) for f in frames] == [2, 2, 1]  # bounded chunks, remainder last
+    ids = pd.concat(frames)["event_record_id"].tolist()
+    assert ids == [0, 1, 2, 3, 4]  # every record emitted exactly once, in order
+
+
+def test_iter_record_frames_rejects_bad_chunk_size():
+    with pytest.raises(ValueError, match="chunk_size"):
+        list(ingest.iter_record_frames([], chunk_size=0))
+
+
+def test_write_parquet_stream_roundtrip_and_count(tmp_path):
+    records = [_record(SYSMON_PROC_CREATE, record_id=i) for i in range(7)]
+    frames = ingest.iter_record_frames(records, chunk_size=3)
+    out, rows = ingest.write_parquet_stream(frames, tmp_path / "s" / "events.parquet")
+    assert rows == 7
+    back = pd.read_parquet(out)
+    assert len(back) == 7
+    assert list(back.columns) == list(ingest.COLUMNS)
+    assert str(back["timestamp"].dtype) == "datetime64[ns, UTC]"
+
+
+def test_write_parquet_stream_empty_keeps_schema(tmp_path):
+    out, rows = ingest.write_parquet_stream([], tmp_path / "empty.parquet")
+    assert rows == 0
+    back = pd.read_parquet(out)
+    assert len(back) == 0
+    assert list(back.columns) == list(ingest.COLUMNS)
+
+
+def test_ingest_stats_events_per_sec():
+    stats = ingest.IngestStats(rows=1000, seconds=0.5, out_path=Path("x"))
+    assert stats.events_per_sec == 2000.0
+
+
 # --- Integration: real parser, gated on a sample file ------------------------
 
 _samples = sorted(FIXTURES.glob("*.evtx")) if FIXTURES.exists() else []
@@ -96,8 +136,10 @@ _samples = sorted(FIXTURES.glob("*.evtx")) if FIXTURES.exists() else []
 
 @pytest.mark.skipif(not _samples, reason="no sample .evtx under tests/fixtures/")
 def test_ingest_real_evtx_file(tmp_path):
-    out = ingest.ingest_file(_samples[0], tmp_path / "events.parquet")
-    frame = pd.read_parquet(out)
-    assert len(frame) > 0
+    stats = ingest.ingest_file(_samples[0], tmp_path / "events.parquet")
+    assert stats.rows > 0
+    assert stats.events_per_sec > 0
+    frame = pd.read_parquet(stats.out_path)
+    assert len(frame) == stats.rows
     assert list(frame.columns) == list(ingest.COLUMNS)
     assert frame["event_id"].notna().any()
