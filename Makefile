@@ -3,7 +3,7 @@
 # Each prints what it will do so the pipeline order is self-documenting.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lock ingest doctor normalize label features rules train evaluate test lint clean all
+.PHONY: help setup lock ingest doctor normalize label features rules train evaluate test coverage lint clean smoke all
 
 help:  ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -75,15 +75,33 @@ evaluate:  ## Regenerate result tables + figure  (usage: make evaluate EVENTS=no
 test:  ## Run the pytest suite
 	$(PY) -m pytest
 
+coverage:  ## Run the suite with a coverage report
+	$(PY) -m pytest --cov=detect --cov-report=term-missing
+
 lint:  ## Lint with ruff
 	$(PY) -m ruff check .
 
 clean:  ## Remove regenerated artifacts
 	rm -rf artifacts figures models
 
-all:  ## Show the end-to-end pipeline invocation (stages take file args)
-	@echo "Run the stages in order (each writes a Parquet the next reads):"
-	@echo "  make ingest    EVTX=<f.evtx>      OUT=data/raw/f.parquet"
-	@echo "  make normalize IN=data/raw/f.parquet OUT=data/normalized/f.parquet"
-	@echo "  # attach labels, then:"
-	@echo "  make evaluate  EVENTS=data/normalized/labeled.parquet"
+smoke:  ## Run the label-free pipeline on the committed fixture (CI sanity check)
+	@tmp=$$(mktemp -d); set -e; \
+	$(PY) -m detect.ingest tests/fixtures/sysmon.evtx $$tmp/raw.parquet; \
+	$(PY) -m detect.normalize $$tmp/raw.parquet $$tmp/norm.parquet; \
+	$(PY) -m detect.doctor $$tmp/norm.parquet; \
+	$(PY) -m detect.features $$tmp/norm.parquet $$tmp/feat.parquet; \
+	$(PY) -m detect.rules $$tmp/norm.parquet $$tmp/alerts.parquet --rules-dir rules; \
+	rm -rf $$tmp; echo "smoke OK"
+
+ALL_RUN := data/_run
+all: EVTX ?=
+all: LABELS ?=
+all: OUTDIR ?= artifacts
+all:  ## Full pipeline raw .evtx -> results (usage: make all EVTX=f.evtx LABELS=labels.csv)
+	@test -n "$(EVTX)" && test -n "$(LABELS)" || { echo "usage: make all EVTX=<f.evtx> LABELS=<labels.csv> [OUTDIR=artifacts]"; echo "  (no labels yet? run 'make smoke' for a pipeline sanity check)"; exit 2; }
+	$(PY) -m detect.ingest "$(EVTX)" "$(ALL_RUN)/raw.parquet"
+	$(PY) -m detect.normalize "$(ALL_RUN)/raw.parquet" "$(ALL_RUN)/norm.parquet"
+	$(PY) -m detect.doctor "$(ALL_RUN)/norm.parquet"
+	$(PY) -m detect.label "$(ALL_RUN)/norm.parquet" "$(LABELS)" "$(ALL_RUN)/labeled.parquet"
+	$(PY) -m detect.evaluate "$(ALL_RUN)/labeled.parquet" --outdir "$(OUTDIR)" --rules-dir rules
+	@echo "done -> $(OUTDIR)/ (results.md, summary.csv, ...) and README table updated"
