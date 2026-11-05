@@ -82,11 +82,36 @@ one numeric matrix. Identifier/label columns (`process_guid`, `host`,
 `session_id`, `source`, `label`, `technique_id`) ride alongside the features but
 are never fed to the model.
 
-## 4. Later decisions
+## 4. Models (model.py)
+
+**Isolation Forest (primary) + z-score baseline (B).** Both consume the
+`FEATURE_COLUMNS` matrix, impute missing values with a **median learned on
+train**, and emit an anomaly score where **higher = more anomalous**. Fitting is
+on the training split only (ideally benign rows — `fit_on_benign`), matching the
+unsupervised premise: learn "normal", flag outliers.
+
+**Why Isolation Forest:** little labeled attack data in production, so we learn
+the benign manifold unsupervised. IF isolates outliers with random splits — near
+log-linear, few hyper-parameters, no distance metric to tune, and it handles the
+mixed-scale, long-tailed features here better than distance methods. LOF and
+one-class SVM are left as optional comparisons (both scale worse and SVM is
+kernel/scale-sensitive). IF is split-based so it is scale-invariant; we impute
+but don't standardize for it.
+
+**Why the z-score baseline:** the ML model must beat something trivial. The
+baseline standardizes each feature on train (mean/std) and scores a process by
+its **mean absolute z** across features — a pure "how unusual is this row"
+number. If IF can't beat it on PR-AUC, IF isn't earning its complexity.
+
+**Scores, not hard labels:** detectors return continuous scores; thresholding
+is deferred to evaluation at a **fixed alert budget** (`alerts_at_budget`), so
+rules and model are compared at equal alert volume rather than at arbitrary
+cutoffs. Models persist via joblib for a reproducible `make train` → score flow.
+
+## 5. Later decisions
 
 > TODO. Record each remaining decision so it is defensible in an interview:
 >
-> - Feature set and the justification for each feature (and what was dropped).
-> - Why Isolation Forest (vs. LOF / one-class SVM) and the frequency baseline.
-> - Train/test split strategy and how leakage is prevented + tested.
+> - Train/test split strategy and how leakage is prevented + tested. (See s3 +
+>   detect.split; expand once the full pipeline wiring exists.)
 > - Evaluation metric choices (PR-AUC, FP/10k benign) and why not accuracy.

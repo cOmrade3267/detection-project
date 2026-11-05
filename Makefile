@@ -39,8 +39,11 @@ features:  ## Per-process features  (usage: make features IN=norm.parquet OUT=fe
 	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make features IN=<norm.parquet> OUT=<feat.parquet>"; exit 2; }
 	$(PY) -m detect.features "$(IN)" "$(OUT)"
 
-train:  ## Fit the Isolation Forest (+ baselines)
-	@echo "TODO: implement src/detect/model.py"
+train: FEATURES ?=
+train: MODEL ?=
+train:  ## Fit Isolation Forest  (usage: make train FEATURES=feat.parquet MODEL=models/iforest.joblib)
+	@test -n "$(FEATURES)" && test -n "$(MODEL)" || { echo "usage: make train FEATURES=<feat.parquet> MODEL=<model.joblib>"; exit 2; }
+	$(PY) -m detect.model "$(FEATURES)" "$(MODEL)"
 
 evaluate:  ## Regenerate every results table and figure (reproducibility gate)
 	@echo "TODO: implement src/detect/evaluate.py"
