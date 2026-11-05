@@ -33,8 +33,11 @@ normalize:  ## Common schema  (usage: make normalize IN=raw.parquet OUT=norm.par
 	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make normalize IN=<raw.parquet> OUT=<norm.parquet>"; exit 2; }
 	$(PY) -m detect.normalize "$(IN)" "$(OUT)"
 
-features:  ## Build per-process / per-window feature tables
-	@echo "TODO: implement src/detect/features.py"
+features: IN ?=
+features: OUT ?=
+features:  ## Per-process features  (usage: make features IN=norm.parquet OUT=feat.parquet)
+	@test -n "$(IN)" && test -n "$(OUT)" || { echo "usage: make features IN=<norm.parquet> OUT=<feat.parquet>"; exit 2; }
+	$(PY) -m detect.features "$(IN)" "$(OUT)"
 
 train:  ## Fit the Isolation Forest (+ baselines)
 	@echo "TODO: implement src/detect/model.py"

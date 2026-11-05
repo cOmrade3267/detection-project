@@ -50,7 +50,39 @@ renderers emit, so normalization doesn't depend on one serializer.
 **Labels** (`label`, `technique_id`, `source`, `session_id`) are columns on the
 schema but populated later from the lab run log, never inferred here.
 
-## 3. Later decisions
+## 3. Features (features.py)
+
+**Unit of analysis: one row per process** (`process_guid`). All events carrying
+that guid — the `process_create` plus its network/file/image/registry/dns
+events — aggregate into a single feature row. Rules and the model therefore
+score *processes*, which is how an analyst triages ("is this process
+malicious?") and lets us report per-process precision/recall.
+
+**Fit/transform split (the leakage rule, in code):** `FeatureBuilder.fit()`
+learns frequency tables (parent-image → child-image pair rarity) on the
+**training** events only; `.transform()` applies them to any set. A pair unseen
+in training gets maximum rarity. Intrinsic features (command-line entropy,
+counts, path flags) need no fitting — they depend only on the row itself, so
+they can't leak. This mirrors "fit scalers/encoders on training data only"
+(CLAUDE.md s3) and is the seam a reviewer will inspect.
+
+**Feature set (small, each justified — CLAUDE.md s4):**
+- *Command line:* length, Shannon entropy, encoded/`-nop`/hidden-window flags,
+  long base64 token — obfuscated PowerShell and LOLBin abuse look unusual here.
+- *Image:* LOLBin basename flag; execution from Temp/AppData/Downloads/
+  ProgramData (living-off-the-land and dropper staging).
+- *Lineage:* integrity level (ordinal); parent→child pair rarity (learned);
+  child-process fan-out (one process spawning many is suspicious).
+- *Network (EID 3):* connection count, distinct destination IPs/ports, count of
+  uncommon ports.
+- *Volume/burst:* per-action event counts, active duration, events per minute.
+
+Booleans are emitted as 0/1 so the Isolation Forest and the rules engine share
+one numeric matrix. Identifier/label columns (`process_guid`, `host`,
+`session_id`, `source`, `label`, `technique_id`) ride alongside the features but
+are never fed to the model.
+
+## 4. Later decisions
 
 > TODO. Record each remaining decision so it is defensible in an interview:
 >
